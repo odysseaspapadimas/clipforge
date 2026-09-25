@@ -1,0 +1,7 @@
+{
+  "name": "clipforge-renderer",
+  "private": true,
+  "type": "module",
+  "scripts": { "start": "bun server.ts", "test": "bun test" },
+  "dependencies": { "zod": "4.3.6" }
+}

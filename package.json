@@ -1,0 +1,43 @@
+{
+  "name": "clipforge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.3.14",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "dev:renderer": "bun renderer/server.ts",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test test renderer",
+    "test:e2e": "playwright test",
+    "db:generate": "drizzle-kit generate",
+    "alchemy:plan": "bun alchemy plan"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "0.3.7",
+    "@tanstack/react-router": "1.170.17",
+    "@tanstack/react-start": "1.168.27",
+    "alchemy": "2.0.0-beta.79",
+    "better-auth": "1.7.6",
+    "drizzle-orm": "0.45.1",
+    "effect": "4.0.0-rc.116",
+    "lucide-react": "0.468.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260918.1",
+    "@effect/platform-bun": "4.0.0-rc.116",
+    "@effect/platform-node": "4.0.0-rc.116",
+    "@playwright/test": "1.61.1",
+    "@types/bun": "1.3.14",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "drizzle-kit": "0.31.9",
+    "typescript": "6.0.3",
+    "vite": "8.1.2"
+  }
+}

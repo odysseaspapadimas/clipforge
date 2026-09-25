@@ -1,0 +1,14 @@
+node_modules/
+.local-dev/
+dist/
+.alchemy/
+.wrangler/
+.dev.vars
+.env*
+!.env.example
+*.db
+*.db-*
+.vite/
+.tanstack/
+test-results/
+playwright-report/
