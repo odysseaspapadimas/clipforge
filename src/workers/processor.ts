@@ -127,11 +127,16 @@ async function rankCandidates(env: ProcessorEnv, suggestions: ReturnType<typeof 
 export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId: string }> {
   override async run(event: WorkflowEvent<{ projectId: string }>, step: WorkflowStep) {
     const { projectId } = event.payload;
-    const project = await this.env.DB.prepare("SELECT id,user_id,source_key,status,duration_ms FROM project WHERE id = ?")
-      .bind(projectId).first<{ id: string; user_id: string; source_key: string; status: string; duration_ms: number | null }>();
+    const project = await this.env.DB.prepare("SELECT id,user_id,source_key,status,duration_ms,transcription_backend FROM project WHERE id = ?")
+      .bind(projectId).first<{ id: string; user_id: string; source_key: string; status: string; duration_ms: number | null;
+        transcription_backend: string | null }>();
     if (!project || project.status === "uploading") throw new Error("project_not_ready");
     if (project.status === "ready") return { projectId, status: "ready" };
     try {
+      // Changing providers during a Workflow would silently merge incompatible chunk results.
+      if (project.transcription_backend && project.transcription_backend !== this.env.TRANSCRIPTION_BACKEND) {
+        throw new Error("transcription_backend_changed_during_project");
+      }
       const manifest = await step.do("prepare-chunks-v3", noRetry,
         () => prepareAudioChunks(this.env, projectId, project.user_id, project.source_key));
       const minutes = sourceMinutes(manifest.durationMs);
@@ -139,8 +144,9 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
         const reserved = await reserveMinutes(this.env.DB, project.user_id, projectId, minutes);
         if (!reserved) throw new Error("insufficient_minutes");
         await this.env.DB.prepare(`UPDATE project SET duration_ms = ?,width = ?,height = ?,transcript_chunks = ?,
-          status = 'processing',updated_at = ? WHERE id = ?`)
-          .bind(manifest.durationMs, manifest.width, manifest.height, manifest.chunkCount, Date.now(), projectId).run();
+          transcription_backend = ?,status = 'processing',updated_at = ? WHERE id = ?`)
+          .bind(manifest.durationMs, manifest.width, manifest.height, manifest.chunkCount,
+            this.env.TRANSCRIPTION_BACKEND, Date.now(), projectId).run();
       });
       for (let index = 0; index < manifest.chunkCount; index++) {
         await step.do(`transcribe-v3-${index}`, noRetry, async () => {

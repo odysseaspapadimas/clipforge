@@ -48,6 +48,40 @@ describe("real Cloudflare ASR boundary (offline contract; no inference billed)",
     const broken = new ReadableStream({ start(controller) { controller.enqueue(new TextEncoder().encode("incomplete")); controller.close(); } });
     await expect((async () => { for await (const _ of lines(broken)) {} })()).rejects.toThrow("Unterminated");
   });
+  test("explicit Deepgram fallback uses the bounded 60-second source, not the long video", async () => {
+    const fake = fakeEnvironment();
+    const projectId = "fe23f344-c75e-4de6-b34d-3bc9bf816241", userId = "creator";
+    fake.objects.set(segmentKey(userId, projectId, 0), new Uint8Array(512));
+    (fake.env as unknown as { TRANSCRIPTION_BACKEND: string; DEEPGRAM_KEY: string }).TRANSCRIPTION_BACKEND = "deepgram";
+    (fake.env as unknown as { DEEPGRAM_KEY: string }).DEEPGRAM_KEY = "unit-test-not-a-key";
+    let calls = 0;
+    const providerFetch = (async (input: RequestInfo | URL, options?: RequestInit) => {
+      calls++;
+      const url = new URL(String(input));
+      expect(url.hostname).toBe("api.deepgram.com");
+      expect(url.searchParams.get("model")).toBe("nova-3");
+      expect(url.searchParams.get("diarize")).toBe("true");
+      expect(new Headers(options?.headers).get("authorization")).toBe("Token unit-test-not-a-key");
+      expect((await new Response(options?.body).arrayBuffer()).byteLength).toBe(512);
+      return Response.json({ results: { channels: [{ alternatives: [{ words: [
+        { word: "hello", start: 0.1, end: 0.4, speaker: 0 },
+      ] }] }] } });
+    }) as typeof fetch;
+    await transcribeChunk(fake.env, projectId, userId, 0, providerFetch);
+    await transcribeChunk(fake.env, projectId, userId, 0, providerFetch);
+    expect(calls).toBe(1);
+    expect(fake.inferences).toBe(0);
+  });
+  test("rejects oversized direct-provider transcripts before writing an object", async () => {
+    const fake = fakeEnvironment();
+    const projectId = "cb8ae90b-f25b-48f6-9906-e35654777a90", userId = "creator";
+    fake.objects.set(segmentKey(userId, projectId, 0), new Uint8Array(512));
+    (fake.env as unknown as { TRANSCRIPTION_BACKEND: string; DEEPGRAM_KEY: string }).TRANSCRIPTION_BACKEND = "deepgram";
+    (fake.env as unknown as { DEEPGRAM_KEY: string }).DEEPGRAM_KEY = "unit-test-not-a-key";
+    const providerFetch = (async () => new Response(new Uint8Array(1_500_001))) as unknown as typeof fetch;
+    await expect(transcribeChunk(fake.env, projectId, userId, 0, providerFetch)).rejects.toThrow("transcript_chunk_oversized");
+    expect(fake.objects.size).toBe(1);
+  });
   test("transcribes chunk once, checkpoints provider response and merges absolute word times", async () => {
     const fake = fakeEnvironment();
     const projectId = "e9b420d7-143d-4f77-952d-20f7cf02a240", userId = "creator";

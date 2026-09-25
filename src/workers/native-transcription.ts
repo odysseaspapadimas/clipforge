@@ -45,18 +45,58 @@ export async function prepareAudioChunks(env: ProcessorEnv, projectId: string, u
 }
 
 /** Checkpoint one paid inference per chunk; no blind automatic retry after an uncertain response. */
-export async function transcribeChunk(env: ProcessorEnv, projectId: string, userId: string, index: number) {
+async function boundedProviderJson(response: Response, maxBytes = 1_500_000) {
+  const announced = Number(response.headers.get("content-length") ?? 0);
+  if (announced > maxBytes || !response.body) throw new Error("transcript_chunk_oversized");
+  const chunks: Uint8Array[] = [];
+  const reader = response.body.getReader();
+  let size = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) throw new Error("transcript_chunk_oversized");
+      chunks.push(value);
+    }
+  } finally { await reader.cancel().catch(() => {}); }
+  const raw = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { raw.set(chunk, offset); offset += chunk.length; }
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as unknown;
+}
+
+/** External provider stays explicit and key-gated; it never silently takes over a failed Cloudflare call. */
+export async function transcribeChunk(env: ProcessorEnv, projectId: string, userId: string, index: number,
+  providerFetch: typeof fetch = fetch) {
   const outputKey = transcriptSegmentKey(userId, projectId, index);
   if (await env.MEDIA.head(outputKey)) return;
   const audio = await env.MEDIA.get(segmentKey(userId, projectId, index));
   if (!audio || audio.size > 1_500_000) throw new Error("audio_chunk_missing_or_oversized");
-  const result = await env.AI.run("@cf/deepgram/nova-3", {
-    audio: { body: audio.body, contentType: "audio/mpeg" },
-    language: "en", diarize: true, punctuate: true, smart_format: true,
-  });
+  const backend = env.TRANSCRIPTION_BACKEND ?? "workers-ai";
+  let result: unknown;
+  if (backend === "workers-ai") {
+    result = await env.AI.run("@cf/deepgram/nova-3", {
+      audio: { body: audio.body, contentType: "audio/mpeg" },
+      language: "en", diarize: true, punctuate: true, smart_format: true,
+    });
+  } else if (backend === "deepgram") {
+    const key = (env as ProcessorEnv & { DEEPGRAM_KEY?: string }).DEEPGRAM_KEY;
+    if (!key) throw new Error("deepgram_key_missing");
+    const url = new URL("https://api.deepgram.com/v1/listen");
+    url.searchParams.set("model", "nova-3");
+    url.searchParams.set("language", "en");
+    url.searchParams.set("diarize", "true");
+    url.searchParams.set("smart_format", "true");
+    const response = await providerFetch(url, { method: "POST", headers: {
+      authorization: `Token ${key}`, "content-type": "audio/mpeg",
+    }, body: audio.body });
+    if (!response.ok) throw new Error(`transcription_http_${response.status}`);
+    result = await boundedProviderJson(response);
+  } else throw new Error("unsupported_transcription_backend");
   const transcript = deepgramResponse.parse(result);
   const serialized = JSON.stringify(transcript);
-  if (serialized.length > 1_500_000) throw new Error("transcript_chunk_oversized");
+  if (new TextEncoder().encode(serialized).byteLength > 1_500_000) throw new Error("transcript_chunk_oversized");
   await env.MEDIA.put(outputKey, serialized, { httpMetadata: { contentType: "application/json" } });
 }
 

@@ -37,6 +37,7 @@ export const projects = sqliteTable("project", {
   durationMs: integer("duration_ms"), width: integer("width"), height: integer("height"),
   transcriptChunks: integer("transcript_chunks").notNull().default(0),
   transcriptChunksDone: integer("transcript_chunks_done").notNull().default(0),
+  transcriptionBackend: text("transcription_backend", { enum: ["workers-ai", "deepgram"] }),
   status: text("status", { enum: ["uploading", "queued", "processing", "ready", "failed"] }).notNull().default("uploading"),
   error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
 }, (table) => [index("project_owner_idx").on(table.userId, table.createdAt)]);

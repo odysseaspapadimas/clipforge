@@ -8,6 +8,13 @@ import Billing from "./src/workers/billing.ts";
 import { Database, Media } from "./src/infra/data.ts";
 import type { RenderContainer } from "./src/workers/processor.ts";
 
+// External Deepgram is an explicit, key-gated fallback until Nova-3 on Workers AI
+// has been exercised against short and long real speech on the staging account.
+const transcriptionBackend = process.env.CLIPFORGE_TRANSCRIPTION_BACKEND ?? "workers-ai";
+if (transcriptionBackend !== "workers-ai" && transcriptionBackend !== "deepgram") {
+  throw new Error("CLIPFORGE_TRANSCRIPTION_BACKEND must be workers-ai or deepgram");
+}
+
 export const Processor = Cloudflare.Worker("ClipforgeProcessor", {
   main: "./src/workers/processor.ts", workersDev: false,
   observability: { enabled: true, logs: { enabled: true, invocationLogs: true } },
@@ -21,6 +28,8 @@ export const Processor = Cloudflare.Worker("ClipforgeProcessor", {
       observability: { logs: { enabled: true } },
     }),
     AI: Cloudflare.Workers.AI(),
+    TRANSCRIPTION_BACKEND: transcriptionBackend,
+    ...(transcriptionBackend === "deepgram" ? { DEEPGRAM_KEY: Config.Redacted("CLIPFORGE_DEEPGRAM_KEY") } : {}),
     INTERNAL_SECRET: Config.Redacted("CLIPFORGE_INTERNAL_SECRET"),
   },
 });
