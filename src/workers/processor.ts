@@ -146,7 +146,8 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
         try {
           return await step.do("prepare-chunks-v4", noRetry, async () => {
             await assertMediaSlot(this.env.DB, lease);
-            return prepareAudioChunks(this.env, projectId, project.user_id, project.source_key, lease.slot);
+            try { return await prepareAudioChunks(this.env, projectId, project.user_id, project.source_key, lease.slot); }
+            catch (error) { throw new Error(safeErrorCode(error)); }
           });
         } finally {
           await step.do("release-prepare-slot-v1", retrySafe, () => releaseMediaSlot(this.env.DB, lease));
@@ -168,7 +169,8 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
       });
       for (let index = 0; index < manifest.chunkCount; index++) {
         await step.do(`transcribe-v3-${index}`, noRetry, async () => {
-          await transcribeChunk(this.env, projectId, project.user_id, index);
+          try { await transcribeChunk(this.env, projectId, project.user_id, index); }
+          catch (error) { throw new Error(safeErrorCode(error)); }
           await this.env.DB.prepare("UPDATE project SET transcript_chunks_done = ?,updated_at = ? WHERE id = ? AND transcript_chunks_done < ?")
             .bind(index + 1, Date.now(), projectId, index + 1).run();
         });
@@ -188,7 +190,7 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
         .bind(String(error).includes("staging_inference_budget_exhausted")
           ? "Staging's shared transcription allowance is exhausted or this source exceeds 10 minutes. Your source minutes were returned."
           : "Processing failed. Your source minutes were returned; contact support or try another upload.", Date.now(), projectId).run();
-      throw error;
+      throw new Error(safeErrorCode(error));
     }
   }
 }
@@ -245,7 +247,7 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
       console.error("export failed", { jobId, code: safeErrorCode(error) });
       await this.env.DB.prepare("UPDATE render_job SET status = 'failed',error = 'Export failed; please retry.',updated_at = ? WHERE id = ?")
         .bind(Date.now(), jobId).run();
-      throw error;
+      throw new Error(safeErrorCode(error));
     }
   }
 }
