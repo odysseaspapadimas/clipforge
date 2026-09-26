@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { buildAss, cropFilter, renderOptions } from "./captions.ts";
-import { displayDimensions } from "../src/domain/orientation.ts";
+import { displayDimensions } from "./orientation.ts";
 
 const MAX_BYTES = 5 * 1024 ** 3;
 const MAX_DURATION_MS = 7_200_000;

@@ -40,6 +40,13 @@ async function startProcessor(path: string, payload: object) {
   }));
   if (!response.ok) throw new Error(`Processor unavailable: ${response.status}`);
 }
+async function tryStartProcessor(path: "ingest" | "export", payload: object): Promise<boolean> {
+  try { await startProcessor(path, payload); return true; }
+  catch (error) {
+    console.warn("processor start deferred", { path, code: safeErrorCode(error) });
+    return false;
+  }
+}
 async function billing(path: string, user: { id: string; email: string }) {
   const response = await env.BILLING.fetch(new Request(`https://internal/internal/${path}`, {
     method: "POST", headers: { "content-type": "application/json", "x-clipforge-internal": env.INTERNAL_SECRET },
@@ -171,8 +178,8 @@ export async function handleApi(request: Request): Promise<Response> {
         if (project.status !== "uploading") {
           const previous = await env.MEDIA.head(project.sourceKey);
           if (previous?.size !== project.fileSize) return fail("Upload not complete", 409);
-          if (project.status === "queued") await startProcessor("ingest", { projectId: project.id });
-          return json({ projectId: project.id, status: project.status });
+          const startPending = project.status === "queued" && !await tryStartProcessor("ingest", { projectId: project.id });
+          return json({ projectId: project.id, status: project.status, startPending }, startPending ? 202 : 200);
         }
         const totalParts = Math.ceil(project.fileSize / PART_BYTES);
         const uploaded = await env.DB.prepare("SELECT part_number AS partNumber,etag,size FROM upload_part WHERE project_id = ? ORDER BY part_number")
@@ -188,11 +195,16 @@ export async function handleApi(request: Request): Promise<Response> {
           await env.MEDIA.delete(project.sourceKey);
           return fail("Uploaded file size did not match", 400);
         }
-        const queued = await env.DB.prepare("UPDATE project SET status = 'queued',upload_id = NULL,updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'")
-          .bind(Date.now(), project.id, user.id).run();
-        if (queued.meta.changes !== 1) { await env.MEDIA.delete(project.sourceKey); return fail("Upload was deleted", 409); }
-        await startProcessor("ingest", { projectId: project.id });
-        return json({ projectId: project.id, status: "queued" }, 202);
+        const queuedAt = Date.now();
+        const queued = await env.DB.prepare("UPDATE project SET status = 'queued',upload_id = NULL,queued_at = ?,updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'")
+          .bind(queuedAt, queuedAt, project.id, user.id).run();
+        if (queued.meta.changes !== 1) {
+          // Another completion may already have claimed the same uploaded source.
+          // Never delete its bytes here; a concurrent deletion owns the R2 purge.
+          return fail("Upload changed; refresh before retrying", 409);
+        }
+        const startPending = !await tryStartProcessor("ingest", { projectId: project.id });
+        return json({ projectId: project.id, status: "queued", startPending }, 202);
       }
       if (request.method === "DELETE" && path.length === 2) {
         const result = await purgeProject(env.DB, env.MEDIA, user.id, project.id);
@@ -265,15 +277,16 @@ export async function handleApi(request: Request): Promise<Response> {
           .bind(user.id, project.id).first<{ count: number }>();
         if ((count?.count ?? 0) >= 20) return fail("Export limit reached for this source", 429);
         const jobId = crypto.randomUUID();
-        await env.DB.prepare(`INSERT OR IGNORE INTO render_job (id,clip_id,user_id,revision,status,created_at,updated_at)
-          SELECT ?,c.id,c.user_id,c.revision,'queued',?,? FROM clip c JOIN project p ON p.id = c.project_id
+        const queuedAt = Date.now();
+        await env.DB.prepare(`INSERT OR IGNORE INTO render_job (id,clip_id,user_id,revision,status,queued_at,created_at,updated_at)
+          SELECT ?,c.id,c.user_id,c.revision,'queued',?,?,? FROM clip c JOIN project p ON p.id = c.project_id
           WHERE c.id = ? AND c.user_id = ? AND c.revision = ? AND p.status = 'ready'`)
-          .bind(jobId, Date.now(), Date.now(), clip.id, user.id, clip.revision).run();
+          .bind(jobId, queuedAt, queuedAt, queuedAt, clip.id, user.id, clip.revision).run();
         const job = await env.DB.prepare("SELECT id,status FROM render_job WHERE clip_id = ? AND revision = ? AND user_id = ?")
           .bind(clip.id, clip.revision, user.id).first<{ id: string; status: string }>();
         if (!job) return fail("Source changed or was deleted; refresh to continue", 409);
-        if (job.status !== "ready") await startProcessor("export", { jobId: job.id });
-        return json({ jobId: job.id, status: job.status }, 202);
+        const startPending = job.status !== "ready" && !await tryStartProcessor("export", { jobId: job.id });
+        return json({ jobId: job.id, status: job.status, startPending }, 202);
       }
       if (request.method === "GET" && path[2] === "download" && path.length === 3) {
         if (!clip.outputKey || clip.status !== "ready" || clip.renderedRevision !== clip.revision) return fail("Export not ready", 409);

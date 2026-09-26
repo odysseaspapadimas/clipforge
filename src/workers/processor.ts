@@ -10,6 +10,7 @@ import { releaseMinutes, reserveMinutes } from "../server/credits.ts";
 import { claimStagingInferenceMinutes } from "../server/inference-budget.ts";
 import { assertMediaSlot, releaseMediaSlot, waitForMediaSlot } from "../server/media-slots.ts";
 import { MEDIA_RETENTION_MS, purgeProject } from "../server/project-retention.ts";
+import { claimExportStart, claimIngestStart } from "../server/job-fences.ts";
 
 export class RenderContainer extends Container { defaultPort = 8080; sleepAfter = "30s"; }
 const retrySafe = { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" } as const;
@@ -21,20 +22,65 @@ function internal(request: Request, env: ProcessorEnv): boolean {
 }
 const sjson = (value: unknown, status = 200) => Response.json(value, { status });
 
+/** Deterministic Workflow IDs make retried service calls safe after ambiguous responses. */
+export async function ensureIngestWorkflow(env: Pick<ProcessorEnv, "DB" | "INGEST">, projectId: string) {
+  const project = await env.DB.prepare("SELECT status FROM project WHERE id = ?")
+    .bind(projectId).first<{ status: string }>();
+  if (project?.status !== "queued" && project?.status !== "processing") throw new Error("project_not_queued");
+  const id = `ingest-${projectId}`;
+  try {
+    const instance = await env.INGEST.create({ id, params: { projectId } });
+    return instance.id;
+  } catch {
+    // Creating an existing ID and losing a successful create response have
+    // the same safe outcome. An unavailable `get` must NOT be called success.
+    const instance = await env.INGEST.get(id);
+    const state = await instance.status();
+    if (state.status === "errored" && project.status === "queued") await instance.restart();
+    else if (!["queued", "running", "waiting", "waitingForPause", "paused"].includes(state.status)) {
+      throw new Error("ingest_workflow_needs_reconciliation");
+    }
+    return instance.id;
+  }
+}
+
+/** A queued export may be retried without creating a second Workflow. */
+export async function ensureQueuedExportWorkflow(env: Pick<ProcessorEnv, "EXPORT">, jobId: string) {
+  const id = `export-${jobId}`;
+  try {
+    const instance = await env.EXPORT.create({ id, params: { jobId } });
+    return instance.id;
+  } catch {
+    const instance = await env.EXPORT.get(id);
+    const state = await instance.status();
+    if (state.status === "errored") await instance.restart();
+    else if (!["queued", "running", "waiting", "waitingForPause", "paused"].includes(state.status)) {
+      throw new Error("export_workflow_needs_reconciliation");
+    }
+    return instance.id;
+  }
+}
+
 /** Process a small bounded batch each hour, including accounts that never sign in again. */
 export async function sweepExpiredProjects(env: Pick<ProcessorEnv, "DB" | "MEDIA">, now = Date.now()): Promise<number> {
   await env.DB.prepare("DELETE FROM upload_admission WHERE created_at < ?")
     .bind(now - 7 * 24 * 60 * 60 * 1000).run();
   const result = await env.DB.prepare(`SELECT id,user_id FROM project
     WHERE created_at < ? AND status IN ('uploading','ready','failed','deleting')
-    ORDER BY updated_at LIMIT 2`)
+    ORDER BY updated_at,id LIMIT 16`)
     .bind(now - MEDIA_RETENTION_MS - 24 * 60 * 60 * 1000).all<{ id: string; user_id: string }>();
   let removed = 0;
   for (const project of result.results) {
+    if (removed >= 2) break;
     try {
-      if (await purgeProject(env.DB, env.MEDIA, project.user_id, project.id) === "deleted") removed++;
+      const outcome = await purgeProject(env.DB, env.MEDIA, project.user_id, project.id);
+      if (outcome === "deleted") { removed++; continue; }
+      if (outcome === "missing") continue;
+      // Busy jobs must not pin the first page forever. Rotate them behind
+      // other eligible owners; the next hourly sweep can retry.
+      await env.DB.prepare("UPDATE project SET updated_at = ? WHERE id = ? AND user_id = ?")
+        .bind(now, project.id, project.user_id).run();
     } catch (error) {
-      // Move a problematic project behind other eligible projects; next hour retries it.
       await env.DB.prepare("UPDATE project SET updated_at = ? WHERE id = ? AND user_id = ?")
         .bind(now, project.id, project.user_id).run();
       console.error("retention sweep failed", { projectId: project.id, code: safeErrorCode(error) });
@@ -68,20 +114,66 @@ export async function reconcileFailedIngests(env: Pick<ProcessorEnv, "DB" | "ING
   return failed;
 }
 
+/** Recover lost Worker-service responses; expire a queue after 24h without charging minutes. */
+export async function recoverQueuedStarts(env: Pick<ProcessorEnv, "DB" | "INGEST" | "EXPORT">, now = Date.now()) {
+  const stale = now - 5 * 60 * 1000;
+  const expired = now - 24 * 60 * 60 * 1000;
+  const ingests = await env.DB.prepare(`SELECT id,COALESCE(queued_at,updated_at) AS queued_at FROM project
+    WHERE status = 'queued' AND updated_at < ? ORDER BY updated_at,id LIMIT 8`)
+    .bind(stale).all<{ id: string; queued_at: number }>();
+  const exports = await env.DB.prepare(`SELECT j.id,COALESCE(j.queued_at,j.updated_at) AS queued_at FROM render_job j
+    JOIN clip c ON c.id = j.clip_id AND c.user_id = j.user_id
+    JOIN project p ON p.id = c.project_id AND p.user_id = j.user_id
+    WHERE j.status = 'queued' AND j.updated_at < ? AND p.status = 'ready'
+    ORDER BY j.updated_at,j.id LIMIT 8`)
+    .bind(stale).all<{ id: string; queued_at: number }>();
+  let retried = 0;
+  let timedOut = 0;
+  for (const item of ingests.results) {
+    if (item.queued_at < expired) {
+      const result = await env.DB.prepare(`UPDATE project SET status = 'failed',
+        error = 'Processing could not start; no source minutes were charged.',updated_at = ?
+        WHERE id = ? AND status = 'queued'`).bind(now, item.id).run();
+      timedOut += result.meta.changes;
+      continue;
+    }
+    try { await ensureIngestWorkflow(env, item.id); retried++; }
+    catch (error) { console.error("queued ingest start deferred", { projectId: item.id, code: safeErrorCode(error) }); }
+    await env.DB.prepare(`UPDATE project SET updated_at = ?,queued_at = COALESCE(queued_at,?)
+      WHERE id = ? AND status = 'queued'`).bind(now, item.queued_at, item.id).run();
+  }
+  for (const item of exports.results) {
+    if (item.queued_at < expired) {
+      const result = await env.DB.prepare(`UPDATE render_job SET status = 'failed',
+        error = 'Export could not start; retry it from the editor.',updated_at = ?
+        WHERE id = ? AND status = 'queued'`).bind(now, item.id).run();
+      timedOut += result.meta.changes;
+      continue;
+    }
+    try { await ensureQueuedExportWorkflow(env, item.id); retried++; }
+    catch (error) { console.error("queued export start deferred", { jobId: item.id, code: safeErrorCode(error) }); }
+    await env.DB.prepare(`UPDATE render_job SET updated_at = ?,queued_at = COALESCE(queued_at,?)
+      WHERE id = ? AND status = 'queued'`).bind(now, item.queued_at, item.id).run();
+  }
+  return { retried, timedOut };
+}
+
 export default {
   async scheduled(_event: ScheduledEvent, env: ProcessorEnv, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(Promise.allSettled([sweepExpiredProjects(env), reconcileFailedIngests(env)])
-      .then(([retention, ingest]) => {
-        for (const [name, result] of [["retention", retention], ["ingest", ingest]] as const) {
-          if (result.status === "rejected") console.error("scheduled maintenance failed", {
-            task: name, code: safeErrorCode(result.reason),
-          });
-        }
-        console.info("scheduled maintenance completed", {
-          removed: retention.status === "fulfilled" ? retention.value : null,
-          reconciled: ingest.status === "fulfilled" ? ingest.value : null,
+    ctx.waitUntil(Promise.allSettled([
+      sweepExpiredProjects(env), reconcileFailedIngests(env), recoverQueuedStarts(env),
+    ]).then(([retention, ingest, queued]) => {
+      for (const [name, result] of [["retention", retention], ["ingest", ingest], ["queued", queued]] as const) {
+        if (result.status === "rejected") console.error("scheduled maintenance failed", {
+          task: name, code: safeErrorCode(result.reason),
         });
-      }));
+      }
+      console.info("scheduled maintenance completed", {
+        removed: retention.status === "fulfilled" ? retention.value : null,
+        reconciled: ingest.status === "fulfilled" ? ingest.value : null,
+        retriedStarts: queued.status === "fulfilled" ? queued.value : null,
+      });
+    }));
   },
   async fetch(request: Request, env: ProcessorEnv): Promise<Response> {
     if (!internal(request, env)) return new Response("Not found", { status: 404 });
@@ -90,14 +182,10 @@ export default {
     if (url.pathname === "/internal/ingest") {
       const parsed = z.object({ projectId: z.string().uuid() }).safeParse(await request.json());
       if (!parsed.success) return sjson({ error: "Invalid project" }, 400);
-      try {
-        const instance = await env.INGEST.create({ id: `ingest-${parsed.data.projectId}`, params: parsed.data });
-        return sjson({ instanceId: instance.id }, 202);
-      } catch (error) {
-        // A previous successful create may have lost its response. Check the deterministic id.
-        const instance = await env.INGEST.get(`ingest-${parsed.data.projectId}`);
-        await instance.status();
-        return sjson({ instanceId: instance.id }, 202);
+      try { return sjson({ instanceId: await ensureIngestWorkflow(env, parsed.data.projectId) }, 202); }
+      catch (error) {
+        console.error("ingest start failed", { projectId: parsed.data.projectId, code: safeErrorCode(error) });
+        return sjson({ error: "Ingest could not start; retry later or cancel the queued upload" }, 503);
       }
     }
     if (url.pathname === "/internal/export") {
@@ -108,29 +196,35 @@ export default {
         JOIN project p ON p.id = c.project_id AND p.user_id = j.user_id WHERE j.id = ?`)
         .bind(parsed.data.jobId).first<{ status: string; revision: number; current_revision: number; project_status: string }>();
       if (!job || job.revision !== job.current_revision || job.project_status !== "ready") return sjson({ error: "Job no longer matches an active project" }, 409);
-      try {
-        const instance = await env.EXPORT.create({ id: `export-${parsed.data.jobId}`, params: parsed.data });
-        return sjson({ instanceId: instance.id }, 202);
-      } catch {
-        const instance = await env.EXPORT.get(`export-${parsed.data.jobId}`);
-        const state = await instance.status();
-        if (job.status === "failed" && state.status === "errored") {
-          const claim = await env.DB.prepare(`UPDATE render_job SET status = 'queued',error = NULL,updated_at = ?
-            WHERE id = ? AND status = 'failed'`).bind(Date.now(), parsed.data.jobId).run();
-          if (claim.meta.changes === 1) {
-            // Restart from the beginning so a released/expired Container lease is acquired anew.
-            try { await instance.restart(); }
-            catch (error) {
-              await env.DB.prepare("UPDATE render_job SET status = 'failed',error = 'Retry could not start',updated_at = ? WHERE id = ?")
-                .bind(Date.now(), parsed.data.jobId).run();
-              throw error;
-            }
-          }
-        } else if (job.status === "failed" && state.status !== "queued" && state.status !== "running") {
-          return sjson({ error: "Export needs support reconciliation" }, 409);
+      if (job.status === "queued") {
+        try { return sjson({ instanceId: await ensureQueuedExportWorkflow(env, parsed.data.jobId) }, 202); }
+        catch (error) {
+          console.error("queued export start failed", { jobId: parsed.data.jobId, code: safeErrorCode(error) });
+          return sjson({ error: "Export could not start; retry later or delete the source" }, 503);
         }
-        return sjson({ instanceId: instance.id }, 202);
       }
+      if (job.status === "failed") {
+        const restartAt = Date.now();
+        const claim = await env.DB.prepare(`UPDATE render_job SET status = 'queued',error = NULL,queued_at = ?,updated_at = ?
+          WHERE id = ? AND status = 'failed' AND EXISTS
+          (SELECT 1 FROM clip c JOIN project p ON p.id = c.project_id AND p.user_id = render_job.user_id
+            WHERE c.id = render_job.clip_id AND c.user_id = render_job.user_id
+              AND c.revision = render_job.revision AND p.status = 'ready')`)
+          .bind(restartAt, restartAt, parsed.data.jobId).run();
+        if (claim.meta.changes !== 1) return sjson({ error: "Export changed; refresh to retry" }, 409);
+        try { return sjson({ instanceId: await ensureQueuedExportWorkflow(env, parsed.data.jobId) }, 202); }
+        catch (error) {
+          console.error("export retry deferred", { jobId: parsed.data.jobId, code: safeErrorCode(error) });
+          return sjson({ error: "Export retry could not start; try again later" }, 503);
+        }
+      }
+      if (job.status === "running") {
+        try {
+          const instance = await env.EXPORT.get(`export-${parsed.data.jobId}`);
+          return sjson({ instanceId: instance.id }, 202);
+        } catch { return sjson({ error: "Export needs support reconciliation" }, 503); }
+      }
+      return sjson({ error: "Export is already complete" }, 409);
     }
     return new Response("Not found", { status: 404 });
   },
@@ -205,6 +299,9 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
         transcription_backend: string | null }>();
     if (!project || !["queued", "processing", "ready"].includes(project.status)) throw new Error("project_not_ready");
     if (project.status === "ready") return { projectId, status: "ready" };
+    if (project.status === "queued" && !await claimIngestStart(this.env.DB, projectId)) {
+      throw new Error("project_cancelled_before_processing");
+    }
     try {
       // Changing providers during a Workflow would silently merge incompatible chunk results.
       if (project.transcription_backend && project.transcription_backend !== this.env.TRANSCRIPTION_BACKEND) {
@@ -247,15 +344,16 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
       await step.do("candidates-v3", retrySafe, () => persistTranscript(this.env,
         { id: projectId, user_id: project.user_id, duration_ms: manifest.durationMs }, manifest));
       await step.do("finish-v1", retrySafe, async () => {
-        await this.env.DB.prepare("UPDATE project SET status = 'ready',error = NULL,updated_at = ? WHERE id = ?")
+        const completed = await this.env.DB.prepare("UPDATE project SET status = 'ready',error = NULL,updated_at = ? WHERE id = ? AND status = 'processing'")
           .bind(Date.now(), projectId).run();
+        if (completed.meta.changes !== 1) throw new Error("project_no_longer_processing");
         return { done: true };
       });
       return { projectId, status: "ready" };
     } catch (error) {
       console.error("ingest failed", { projectId, code: safeErrorCode(error) });
       await releaseMinutes(this.env.DB, project.user_id, projectId);
-      await this.env.DB.prepare("UPDATE project SET status = 'failed',error = ?,updated_at = ? WHERE id = ?")
+      await this.env.DB.prepare("UPDATE project SET status = 'failed',error = ?,updated_at = ? WHERE id = ? AND status = 'processing'")
         .bind(String(error).includes("staging_inference_budget_exhausted")
           ? "Staging's shared transcription allowance is exhausted or this source exceeds 10 minutes. Your source minutes were returned."
           : "Processing failed. Your source minutes were returned; contact support or try another upload.", Date.now(), projectId).run();
@@ -273,6 +371,8 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
         project_id: string; start_ms: number; end_ms: number; crop_x: number; crop_y: number; zoom: number; captions: string; source_key: string }>();
     if (!job) throw new Error("job_missing");
     if (job.status === "ready") return { jobId, status: "ready" };
+    if (job.status === "queued" && !await claimExportStart(this.env.DB, jobId)) throw new Error("job_cancelled_before_render");
+    if (job.status !== "queued" && job.status !== "running") throw new Error("job_not_runnable");
     const outputKey = `users/${job.user_id}/outputs/${job.clip_id}/revision-${job.revision}.mp4`;
     try {
       const lease = await waitForMediaSlot(step, this.env.DB, `render-${jobId}`, "render");
@@ -280,8 +380,6 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
         await step.do("render-v2", noRetry, async () => {
           if (await this.env.MEDIA.head(outputKey)) return;
           await assertMediaSlot(this.env.DB, lease);
-          await this.env.DB.prepare("UPDATE render_job SET status = 'running',updated_at = ? WHERE id = ?")
-          .bind(Date.now(), jobId).run();
         const source = await this.env.MEDIA.get(job.source_key);
         if (!source) throw new Error("source_missing");
         const container = getContainer(this.env.RENDER, `media-slot-${lease.slot}`);
@@ -314,7 +412,7 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
       return { jobId, status: "ready" };
     } catch (error) {
       console.error("export failed", { jobId, code: safeErrorCode(error) });
-      await this.env.DB.prepare("UPDATE render_job SET status = 'failed',error = 'Export failed; please retry.',updated_at = ? WHERE id = ?")
+      await this.env.DB.prepare("UPDATE render_job SET status = 'failed',error = 'Export failed; please retry.',updated_at = ? WHERE id = ? AND status = 'running'")
         .bind(Date.now(), jobId).run();
       throw new Error(safeErrorCode(error));
     }

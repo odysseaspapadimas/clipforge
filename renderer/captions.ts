@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { cropRect } from "../src/domain/crop.ts";
+import { cropRect } from "./crop.ts";
+import { captionFrames, captionLines } from "./caption-timeline.ts";
 
 export const renderOptions = z.object({
   startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(),
@@ -23,23 +24,10 @@ function safeText(text: string): string {
 
 /** Karaoke-style word highlights; all times are relative to the selected source boundary. */
 export function buildAss(options: RenderOptions): string {
-  const groups: Array<typeof options.captions> = [];
-  let group: typeof options.captions = [];
-  for (const word of options.captions) {
-    if (word.startMs < options.startMs || word.endMs > options.endMs || word.endMs <= word.startMs) continue;
-    if (group.length >= 4 || (group.length > 0 && (word.startMs - group[0].startMs > 1600 || word.startMs - group[group.length - 1].endMs > 360))) {
-      groups.push(group); group = [];
-    }
-    group.push(word);
-  }
-  if (group.length) groups.push(group);
-  const events = groups.flatMap((words) => words.map((word, index) => {
-    const next = words[index + 1];
-    const start = word.startMs - options.startMs;
-    const end = Math.min(options.endMs - options.startMs, Math.max(word.endMs, next ? next.startMs : word.endMs + 180) - options.startMs);
-    const text = words.map((item, position) => `${position === index ? "{\\1c&H53DDFF&}" : "{\\1c&HFFFFFF&}"}${safeText(item.text)}`).join(" ");
-    return `Dialogue: 0,${assTime(start)},${assTime(Math.max(start + 30, end))},Caption,,0,0,0,,${text}`;
-  }));
+  const events = captionFrames(options.captions, options.startMs, options.endMs).map((frame) => {
+    const text = captionLines(frame.words).map((line) => safeText(line)).join("\\N");
+    return `Dialogue: 0,${assTime(frame.startCs * 10)},${assTime(frame.endCs * 10)},Caption,,0,0,0,,${text}`;
+  });
   return `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Caption,DejaVu Sans,76,&H00FFFFFF,&H00FFFFFF,&H000B1020,&H880B1020,-1,0,0,0,100,100,0,0,1,5,2,2,65,65,315,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${events.join("\n")}\n`;
 }
 

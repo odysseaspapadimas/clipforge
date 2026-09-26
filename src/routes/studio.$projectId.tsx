@@ -2,6 +2,8 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, ArrowRight, Captions, Check, ChevronDown, Crop, Download, Film, LoaderCircle, Play, RotateCcw, Save, Sparkles } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { previewCropStyle } from "../domain/crop.ts";
+import { captionFrames, captionLines } from "../domain/caption-timeline.ts";
+import { insertCaption, removeCaption } from "../domain/caption-edit.ts";
 
 export const Route = createFileRoute("/studio/$projectId")({ component: ProjectEditor });
 type Caption = { text: string; startMs: number; endMs: number };
@@ -30,6 +32,7 @@ function ProjectEditor() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [tab, setTab] = useState<"cut" | "frame" | "captions">("cut");
+  const [newCaptionText, setNewCaptionText] = useState("");
   const [playing, setPlaying] = useState(false);
   const [previewError, setPreviewError] = useState("");
   const [currentMs, setCurrentMs] = useState(0);
@@ -59,16 +62,18 @@ function ProjectEditor() {
   const job = data?.jobs.find((item) => item.clipId === selected && item.revision === original?.revision);
   const captions = useMemo(() => draft?.captions ?? [], [draft?.captions]);
   const previewWords = useMemo(() => {
-    const groups: Caption[][] = [];
-    let group: Caption[] = [];
-    for (const word of captions) {
-      if (group.length >= 4 || (group.length > 0 && (word.startMs - group[0].startMs > 1600 ||
-        word.startMs - group[group.length - 1].endMs > 360))) { groups.push(group); group = []; }
-      group.push(word);
-    }
-    if (group.length) groups.push(group);
-    return groups.find((items) => items.some((word) => currentMs >= word.startMs && currentMs < word.endMs + 150)) ?? [];
-  }, [captions, currentMs]);
+    if (!draft) return [];
+    const frame = captionFrames(captions, draft.startMs, draft.endMs).find((item) =>
+      currentMs - draft.startMs >= item.startCs * 10 && currentMs - draft.startMs < item.endCs * 10);
+    return frame ? captionLines(frame.words) : [];
+  }, [captions, currentMs, draft?.startMs, draft?.endMs]);
+  function addCaption(after: number) {
+    if (!draft) return;
+    try {
+      setDraft({ ...draft, captions: insertCaption(draft.captions, after, newCaptionText, draft.startMs, draft.endMs) });
+      setNewCaptionText(""); setError("");
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not insert word"); }
+  }
   async function save() {
     if (!draft) return;
     setBusy(true); setError(""); setNotice("");
@@ -89,8 +94,22 @@ function ProjectEditor() {
   async function exportClip() {
     if (!draft || dirty) return;
     setBusy(true); setError(""); setNotice("");
-    try { await api(`clips/${draft.id}/export`, { method: "POST" }); setNotice("Your export is queued. We'll keep this page updated."); await refresh(); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not start export"); }
+    try {
+      const result = await api<{ startPending?: boolean }>(`clips/${draft.id}/export`, { method: "POST" });
+      setNotice(result.startPending ? "Export start is delayed. Retry the same export or return later; no duplicate job will be created." :
+        "Your export is queued. We'll keep this page updated.");
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not start export"); }
+    finally { setBusy(false); }
+  }
+  async function retryIngest() {
+    setBusy(true); setError(""); setNotice("");
+    try {
+      const result = await api<{ startPending?: boolean }>(`uploads/${projectId}/complete`, { method: "POST" });
+      setNotice(result.startPending ? "Processing is still waiting to start. You can retry or cancel this queued upload." :
+        "Processing request accepted. This page will update automatically.");
+      await refresh();
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not retry processing"); }
     finally { setBusy(false); }
   }
   async function syncCaptions() {
@@ -113,7 +132,8 @@ function ProjectEditor() {
       <p>{project.transcriptChunks > 0 ? `${project.transcriptChunksDone} of ${project.transcriptChunks} audio segments complete. You can leave and come back.` :
         "We're checking the video and extracting its audio. Longer recordings take more time."}</p>
       {project.transcriptChunks > 0 && <div className="transcription-progress" role="progressbar" aria-valuenow={project.transcriptChunksDone}
-        aria-valuemin={0} aria-valuemax={project.transcriptChunks} aria-label="Transcription progress"><i style={{ width: `${Math.min(100, 100 * project.transcriptChunksDone / project.transcriptChunks)}%` }} /></div>}</div><LoaderCircle size={21} className="spin" /></div>}
+        aria-valuemin={0} aria-valuemax={project.transcriptChunks} aria-label="Transcription progress"><i style={{ width: `${Math.min(100, 100 * project.transcriptChunksDone / project.transcriptChunks)}%` }} /></div>}
+      {project.status === "queued" && <div className="queued-actions"><button className="button button-outline" disabled={busy} onClick={() => void retryIngest()}>Retry processing start</button><Link to="/studio" className="text-link">Cancel the queued upload in your library</Link></div>}</div><LoaderCircle size={21} className="spin" /></div>}
     {project.status === "ready" && data.clips.length === 0 && <div className="processing-card failed"><strong>No clips found yet.</strong><p>There wasn't enough transcribed speech to suggest a cut. Contact support if this seems wrong.</p></div>}
     {project.status === "ready" && draft && <div className="editor-grid"><aside className="moments-panel"><div className="moments-title"><div><span className="panel-label">AI-ASSISTED PICKS</span><h2>The moments <em>worth a look.</em></h2></div><span className="count-bubble">{data.clips.length}</span></div><p className="moments-help">Starting points, not finished edits. Pick one and make it your own.</p>
       <div className="moment-list">{data.clips.map((clip, index) => <button key={clip.id} className={`moment ${selected === clip.id ? "active" : ""}`} onClick={() => { setSelected(clip.id); setDraft(clip); setNotice(""); setError(""); if (player) { player.pause(); player.currentTime = clip.startMs / 1000; setCurrentMs(clip.startMs); } }}><span className="moment-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{clip.title}</strong><small>{displayTime(clip.startMs)} – {displayTime(clip.endMs)} <span>·</span> {Math.round((clip.endMs - clip.startMs) / 1000)} sec</small></div><ArrowRight size={17} /></button>)}</div>
@@ -128,13 +148,13 @@ function ProjectEditor() {
         }}
         onTimeUpdate={(event) => { setCurrentMs(event.currentTarget.currentTime * 1000); if (event.currentTarget.currentTime >= draft.endMs / 1000) { event.currentTarget.pause(); setPlaying(false); } }}
         style={project.width && project.height ? previewCropStyle(project.width, project.height, draft.cropX, draft.cropY, draft.zoom) : undefined} />
-        <div className="preview-overlay">{previewWords.map((word) => <span className={currentMs >= word.startMs && currentMs <= word.endMs ? "highlight" : ""} key={`${word.startMs}-${word.text}`}>{word.text} </span>)}</div>
+        <div className="preview-overlay">{previewWords.map((line, index) => <span className="highlight" key={index}>{line}{index < previewWords.length - 1 && <br />}</span>)}</div>
         {previewError ? <div className="preview-error" role="alert">{previewError}</div> : <button className="preview-play" aria-label={playing ? "Pause preview" : "Play preview"} onClick={() => { if (!player) return; if (playing) { player.pause(); setPlaying(false); } else { if (player.currentTime < draft.startMs / 1000 || player.currentTime >= draft.endMs / 1000) player.currentTime = draft.startMs / 1000; void player.play().then(() => setPlaying(true)).catch(() => setPreviewError("Playback failed in this browser. Convert to H.264/AAC MP4.")); } }}><Play size={25} fill="currentColor" /></button>}</div></div>
         <div className="preview-details"><span>9:16 PORTRAIT</span><strong>{displayTime(draft.startMs)} → {displayTime(draft.endMs)}</strong><p>Frame uses the export crop. Caption typography is approximate; check your rendered MP4.</p></div></div>
       <div className="editor-controls"><div className="tabs" role="tablist"><button className={tab === "cut" ? "selected" : ""} onClick={() => setTab("cut")}><Film size={17} /> Cut</button><button className={tab === "frame" ? "selected" : ""} onClick={() => setTab("frame")}><Crop size={17} /> Frame</button><button className={tab === "captions" ? "selected" : ""} onClick={() => setTab("captions")}><Captions size={17} /> Captions</button></div>
         {tab === "cut" && <div className="control-body"><label>Clip title<input value={draft.title} maxLength={120} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label><div className="input-pair"><label>Start (seconds)<input type="number" min={0} max={Math.floor((project.durationMs ?? 0) / 1000)} step="0.1" value={draft.startMs / 1000} onChange={(event) => setDraft({ ...draft, startMs: Math.round(Number(event.target.value) * 1000) })} /></label><label>End (seconds)<input type="number" min={0} max={Math.floor((project.durationMs ?? 0) / 1000)} step="0.1" value={draft.endMs / 1000} onChange={(event) => setDraft({ ...draft, endMs: Math.round(Number(event.target.value) * 1000) })} /></label></div><p className="hint">Choose an 8–180 second moment. Boundaries are absolute times in the source video.</p><div className="transcript-sample"><span>THE CONVERSATION</span><p>{words.length ? words.map((word) => word.text).join(" ") : "Transcript for this passage is loading…"}</p></div></div>}
         {tab === "frame" && <div className="control-body"><p className="hint">Drag the focal-point sliders to keep your speaker in frame. Vertical crop is shown in the preview.</p><label className="slider-label">Horizontal focus <strong>{draft.cropX / 10}%</strong><input type="range" min="0" max="1000" step="10" value={draft.cropX} onChange={(event) => setDraft({ ...draft, cropX: Number(event.target.value) })} /></label><label className="slider-label">Vertical focus <strong>{draft.cropY / 10}%</strong><input type="range" min="0" max="1000" step="10" value={draft.cropY} onChange={(event) => setDraft({ ...draft, cropY: Number(event.target.value) })} /></label><label className="slider-label">Zoom <strong>{(draft.zoom / 1000).toFixed(1)}×</strong><input type="range" min="1000" max="2500" step="50" value={draft.zoom} onChange={(event) => setDraft({ ...draft, zoom: Number(event.target.value) })} /></label></div>}
-        {tab === "captions" && <div className="control-body"><div className="caption-heading"><p className="hint">Correct word text and absolute start/end seconds before publishing. Overlapping speakers are retained; review their timing. Extending the cut adds newly exposed words on save.</p><button onClick={() => { if (window.confirm("Replace all captions from the transcript? Unsaved text/timing edits will be lost.")) void syncCaptions(); }} className="text-button"><RotateCcw size={15} /> Reset to transcript</button></div><div className="caption-list">{captions.map((item, index) => <div className="caption-row" key={`${draft.id}-${index}`}><span>{index + 1}.</span><input aria-label={`Caption ${index + 1} text`} value={item.text} maxLength={80} onChange={(event) => { const next = [...draft.captions]; next[index] = { ...item, text: event.target.value }; setDraft({ ...draft, captions: next }); }} /><label>Start (s)<input aria-label={`Caption ${index + 1} start`} type="number" min={draft.startMs / 1000} max={draft.endMs / 1000} step="0.01" value={item.startMs / 1000} onChange={(event) => { const next = [...draft.captions]; next[index] = { ...item, startMs: Math.round(Number(event.target.value) * 1000) }; setDraft({ ...draft, captions: next }); }} /></label><label>End (s)<input aria-label={`Caption ${index + 1} end`} type="number" min={draft.startMs / 1000} max={draft.endMs / 1000} step="0.01" value={item.endMs / 1000} onChange={(event) => { const next = [...draft.captions]; next[index] = { ...item, endMs: Math.round(Number(event.target.value) * 1000) }; setDraft({ ...draft, captions: next }); }} /></label></div>)}</div></div>}
-      </div><div className="workbench-footer"><div><span>{dirty ? "Unsaved changes" : "All changes saved"}</span>{job && <small>Export · {job.status}{job.error ? ` — ${job.error}` : ""}</small>}</div><div className="editor-actions"><button disabled={busy || !dirty} onClick={save} className="button button-outline"><Save size={17} /> Save edits</button>{draft.status === "ready" && draft.renderedRevision === draft.revision && !dirty ? <a href={`/api/clips/${draft.id}/download`} className="button button-dark"><Download size={18} /> Download MP4</a> : <button disabled={busy || dirty || job?.status === "running" || job?.status === "queued"} onClick={exportClip} className="button button-dark">{busy ? <LoaderCircle size={17} className="spin" /> : <Film size={17} />} Export short <ArrowRight size={17} /></button>}</div></div></div></div>}
+        {tab === "captions" && <div className="control-body"><div className="caption-heading"><p className="hint">Correct, insert or remove words and their absolute start/end seconds. Simultaneous words appear on separate lines. Extending the cut adds newly exposed words on save.</p><button onClick={() => { if (window.confirm("Replace all captions from the transcript? Unsaved text/timing edits will be lost.")) void syncCaptions(); }} className="text-button"><RotateCcw size={15} /> Reset to transcript</button></div><div className="caption-add"><label>Missing word<input aria-label="New caption word" value={newCaptionText} maxLength={80} placeholder="Type a missing word" onChange={(event) => setNewCaptionText(event.target.value)} /></label><button className="button button-outline" disabled={!newCaptionText.trim()} onClick={() => addCaption(-1)}>Add at start</button></div><div className="caption-list">{captions.map((item, index) => <div className="caption-row" key={`${draft.id}-${index}`}><span>{index + 1}.</span><input aria-label={`Caption ${index + 1} text`} value={item.text} maxLength={80} onChange={(event) => { const next = [...draft.captions]; next[index] = { ...item, text: event.target.value }; setDraft({ ...draft, captions: next }); }} /><label>Start (s)<input aria-label={`Caption ${index + 1} start`} type="number" min={draft.startMs / 1000} max={draft.endMs / 1000} step="0.01" value={item.startMs / 1000} onChange={(event) => { const next = [...draft.captions]; next[index] = { ...item, startMs: Math.round(Number(event.target.value) * 1000) }; setDraft({ ...draft, captions: next }); }} /></label><label>End (s)<input aria-label={`Caption ${index + 1} end`} type="number" min={draft.startMs / 1000} max={draft.endMs / 1000} step="0.01" value={item.endMs / 1000} onChange={(event) => { const next = [...draft.captions]; next[index] = { ...item, endMs: Math.round(Number(event.target.value) * 1000) }; setDraft({ ...draft, captions: next }); }} /></label><button className="caption-small-button" aria-label={`Add word after caption ${index + 1}`} disabled={!newCaptionText.trim()} onClick={() => addCaption(index)}>+ Word</button><button className="caption-small-button caption-remove" aria-label={`Remove caption ${index + 1}`} onClick={() => setDraft({ ...draft, captions: removeCaption(draft.captions, index) })}>Remove</button></div>)}</div></div>}
+      </div><div className="workbench-footer"><div><span>{dirty ? "Unsaved changes" : "All changes saved"}</span>{job && <small>Export · {job.status}{job.error ? ` — ${job.error}` : ""}</small>}</div><div className="editor-actions"><button disabled={busy || !dirty} onClick={save} className="button button-outline"><Save size={17} /> Save edits</button>{draft.status === "ready" && draft.renderedRevision === draft.revision && !dirty ? <a href={`/api/clips/${draft.id}/download`} className="button button-dark"><Download size={18} /> Download MP4</a> : <button disabled={busy || dirty || job?.status === "running"} onClick={exportClip} className="button button-dark">{busy ? <LoaderCircle size={17} className="spin" /> : <Film size={17} />} {job?.status === "queued" ? "Retry export start" : "Export short"} <ArrowRight size={17} /></button>}</div></div></div></div>}
   </div>;
 }

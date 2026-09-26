@@ -67,9 +67,19 @@ test("verified customer can upload, edit, export and download; other accounts ca
   await captionText.fill("Corrected");
   const firstStart = page.getByLabel("Caption 1 start");
   await firstStart.fill("0.1");
+  await page.getByLabel("New caption word").fill("Inserted");
+  await page.getByRole("button", { name: "Add word after caption 1", exact: true }).click();
+  await expect(page.getByLabel("Caption 2 text")).toHaveValue("Inserted");
+  const removedText = await page.getByLabel("Caption 3 text").inputValue();
+  const removedStart = Number(await page.getByLabel("Caption 3 start").inputValue()) * 1000;
+  await page.getByRole("button", { name: "Remove caption 3", exact: true }).click();
   await page.getByRole("button", { name: "Save edits" }).click();
   await expect(captionText).toHaveValue("Corrected");
   await expect(firstStart).toHaveValue("0.1");
+  const savedCaptions = await (await page.request.get(`/api/projects/${projectId}`)).json();
+  expect(savedCaptions.clips[0].captions[1].text).toBe("Inserted");
+  expect(savedCaptions.clips[0].captions.some((item: { text: string; startMs: number }) =>
+    item.text === removedText && item.startMs === removedStart)).toBe(false);
   await page.getByRole("button", { name: "Cut", exact: true }).click();
   await page.getByLabel("End (seconds)").fill("9");
   await page.getByRole("button", { name: "Save edits" }).click();
@@ -158,12 +168,21 @@ test("verified customer can upload, edit, export and download; other accounts ca
     .filter((item) => item.isFile()).map((item) => `${item.parentPath}/${item.name}`);
   expect(stored.some((key) => key.includes(projectId) || key.includes(clipId))).toBe(false);
   const me = await (await page.request.get("/api/me")).json() as { user: { id: string } };
-  const staleId = crypto.randomUUID();
+  const staleId = crypto.randomUUID(), queuedId = crypto.randomUUID();
   const db = new DatabaseSync(resolve(".local-dev/clipforge.sqlite"));
   db.prepare(`INSERT INTO project(id,user_id,title,source_key,file_size,mime_type,status,created_at,updated_at)
     VALUES (?,?,?,?,1,'video/mp4','ready',?,?)`).run(staleId, me.user.id, "expired source",
       `users/${me.user.id}/sources/${staleId}/original`, Date.now() - 92 * 86_400_000, Date.now());
+  db.prepare(`INSERT INTO project(id,user_id,title,source_key,file_size,mime_type,status,queued_at,created_at,updated_at)
+    VALUES (?,?,?,?,1,'video/mp4','queued',?,?,?)`).run(queuedId, me.user.id, "orphan queued",
+      `users/${me.user.id}/sources/${queuedId}/original`, Date.now(), Date.now(), Date.now());
   db.close();
+  await page.goto("/studio");
+  await expect(page.getByRole("button", { name: "Delete orphan queued" })).toBeVisible();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Delete orphan queued" }).click();
+  await expect(page.getByRole("button", { name: "Delete orphan queued" })).toHaveCount(0);
+  expect((await page.request.get(`/api/projects/${queuedId}`)).status()).toBe(404);
   const library = await (await page.request.get("/api/projects")).json() as { projects: Array<{ id: string }> };
   expect(library.projects.some((item) => item.id === staleId)).toBe(false);
 });

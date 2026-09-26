@@ -3,7 +3,7 @@ import type { ProcessorEnv } from "../alchemy.run.ts";
 
 mock.module("cloudflare:workers", () => ({ WorkflowEntrypoint: class {} }));
 mock.module("@cloudflare/containers", () => ({ Container: class {}, getContainer: () => { throw new Error("Container not called"); } }));
-const { default: processor, rankCandidates } = await import("../src/workers/processor.ts");
+const { default: processor, rankCandidates, ensureIngestWorkflow } = await import("../src/workers/processor.ts");
 
 function fixture(initialStatus: string, currentRevision = 1, projectStatus = "ready") {
   let status = initialStatus, workflowState = "errored", restarts = 0;
@@ -35,6 +35,22 @@ test("a valid empty/invalid model ranking falls back instead of failing ingest",
       .toEqual(suggestions.slice(0, 8).map((item) => item.title));
   }
 });
+test("ambiguous ingest create uses deterministic Workflow ID; unknown or cancelled work is never reported started", async () => {
+  let project = "queued", getAvailable = true, restart = 0;
+  const id = "ingest-5277584a-0fcb-4a3c-a6a8-fe372aa2bdd7";
+  const env = { DB: { prepare: () => ({ bind: () => ({ first: async () => ({ status: project }) }) }) },
+    INGEST: { create: async ({ id: candidate }: { id: string }) => { expect(candidate).toBe(id); throw Error("ambiguous create"); },
+      get: async (candidate: string) => { expect(candidate).toBe(id); if (!getAvailable) throw Error("unavailable");
+        return { id, status: async () => ({ status: "running" }), restart: async () => { restart++; } }; } },
+  } as unknown as ProcessorEnv;
+  expect(await ensureIngestWorkflow(env, id.slice(7))).toBe(id);
+  expect(restart).toBe(0);
+  getAvailable = false;
+  await expect(ensureIngestWorkflow(env, id.slice(7))).rejects.toThrow("unavailable");
+  project = "deleting";
+  await expect(ensureIngestWorkflow(env, id.slice(7))).rejects.toThrow("project_not_queued");
+});
+
 describe("export workflow retry", () => {
   test("restarts a failed revision exactly once and does not restart running work", async () => {
     const f = fixture("failed");

@@ -22,7 +22,7 @@ test("scheduled retention scans only terminal projects past expiry in bounded ba
   } } } as unknown as ProcessorEnv;
   expect(await sweepExpiredProjects(env, now)).toBe(0);
   expect(sql).toContain("status IN ('uploading','ready','failed','deleting')");
-  expect(sql).toContain("LIMIT 2");
+  expect(sql).toContain("ORDER BY updated_at,id LIMIT 16");
   expect(cutoff).toBe(now - MEDIA_RETENTION_MS - 24 * 60 * 60 * 1000);
   expect(ledgerCutoff).toBe(now - 7 * 24 * 60 * 60 * 1000);
 });

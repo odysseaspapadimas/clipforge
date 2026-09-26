@@ -39,7 +39,8 @@ export const projects = sqliteTable("project", {
   transcriptChunksDone: integer("transcript_chunks_done").notNull().default(0),
   transcriptionBackend: text("transcription_backend", { enum: ["workers-ai", "deepgram"] }),
   status: text("status", { enum: ["uploading", "queued", "processing", "ready", "failed", "deleting"] }).notNull().default("uploading"),
-  error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
+  error: text("error"), queuedAt: integer("queued_at"),
+  createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
 }, (table) => [index("project_owner_idx").on(table.userId, table.createdAt)]);
 // Retain admission timestamps for seven days after project deletion so repeated
 // delete/reupload cycles cannot reset the rolling daily limit.
@@ -72,7 +73,8 @@ export const renderJobs = sqliteTable("render_job", {
   id: text("id").primaryKey(), clipId: text("clip_id").notNull().references(() => clips.id),
   userId: text("user_id").notNull().references(() => users.id), revision: integer("revision").notNull(),
   status: text("status", { enum: ["queued", "running", "ready", "failed"] }).notNull().default("queued"),
-  error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
+  error: text("error"), queuedAt: integer("queued_at"),
+  createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
 }, (table) => [uniqueIndex("render_clip_revision_idx").on(table.clipId, table.revision)]);
 export const subscriptions = sqliteTable("subscription", {
   userId: text("user_id").primaryKey().references(() => users.id), customerId: text("customer_id").notNull().unique(),
