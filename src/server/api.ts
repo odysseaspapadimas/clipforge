@@ -6,6 +6,7 @@ import { requireUser } from "./auth.ts";
 import { balance } from "./credits.ts";
 import { STAGING_TOTAL_INFERENCE_MINUTES } from "./inference-budget.ts";
 import { env } from "./env.ts";
+import { readJson } from "./json.ts";
 import { clips, projects, subscriptions } from "./schema.ts";
 
 const PART_BYTES = 32 * 1024 * 1024;
@@ -29,12 +30,6 @@ const clipFor = async (userId: string, id: string) => {
   if (!uuid.safeParse(id).success) return null;
   return (await db().select().from(clips).where(and(eq(clips.id, id), eq(clips.userId, userId))).limit(1))[0] ?? null;
 };
-async function readJson(request: Request): Promise<unknown> {
-  if (!request.headers.get("content-type")?.startsWith("application/json")) throw new Error("Expected JSON");
-  const length = Number(request.headers.get("content-length") ?? 0);
-  if (length > 128_000) throw new Error("Request too large");
-  return request.json();
-}
 async function startProcessor(path: string, payload: object) {
   const response = await env.PROCESSOR.fetch(new Request(`https://internal/internal/${path}`, {
     method: "POST", headers: { "content-type": "application/json", "x-clipforge-internal": env.INTERNAL_SECRET },
