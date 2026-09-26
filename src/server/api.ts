@@ -10,6 +10,7 @@ import { env } from "./env.ts";
 import { readJson } from "./json.ts";
 import { MEDIA_RETENTION_MS, projectExpired, purgeProject } from "./project-retention.ts";
 import { clips, projects, subscriptions } from "./schema.ts";
+import { admitUpload } from "./upload-admission.ts";
 
 const PART_BYTES = 32 * 1024 * 1024;
 const uuid = z.string().uuid();
@@ -118,16 +119,20 @@ export async function handleApi(request: Request): Promise<Response> {
       const active = await env.DB.prepare("SELECT COUNT(*) AS count FROM project WHERE user_id = ? AND status IN ('uploading','queued','processing')")
         .bind(user.id).first<{ count: number }>();
       if ((active?.count ?? 0) >= 2) return fail("Finish existing uploads before starting another", 429);
-      const recent = await env.DB.prepare("SELECT COUNT(*) AS count FROM project WHERE user_id = ? AND created_at >= ?")
+      const recent = await env.DB.prepare("SELECT COUNT(*) AS count FROM upload_admission WHERE user_id = ? AND created_at >= ?")
         .bind(user.id, Date.now() - 24 * 60 * 60 * 1000).first<{ count: number }>();
       if ((recent?.count ?? 0) >= 10) return fail("Daily upload limit reached", 429);
       const id = crypto.randomUUID();
       const sourceKey = `users/${user.id}/sources/${id}/original`;
       const multipart = await env.MEDIA.createMultipartUpload(sourceKey, { httpMetadata: { contentType: parsed.data.mimeType } });
       try {
-        await db().insert(projects).values({ id, userId: user.id, title: parsed.data.name.replace(/\.[^.]+$/, ""),
+        const admitted = await admitUpload(env.DB, { id, userId: user.id, title: parsed.data.name.replace(/\.[^.]+$/, ""),
           sourceKey, uploadId: multipart.uploadId, fileSize: parsed.data.size, mimeType: parsed.data.mimeType,
-          createdAt: Date.now(), updatedAt: Date.now() });
+          now: Date.now() });
+        if (!admitted) {
+          await multipart.abort();
+          return fail("Active upload, daily limit or subscription changed. Refresh and retry.", 429);
+        }
       } catch (error) { await multipart.abort(); throw error; }
       return json({ projectId: id, partBytes: PART_BYTES, parts: Math.ceil(parsed.data.size / PART_BYTES) }, 201);
     }

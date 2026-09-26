@@ -23,6 +23,8 @@ const sjson = (value: unknown, status = 200) => Response.json(value, { status })
 
 /** Process a small bounded batch each hour, including accounts that never sign in again. */
 export async function sweepExpiredProjects(env: Pick<ProcessorEnv, "DB" | "MEDIA">, now = Date.now()): Promise<number> {
+  await env.DB.prepare("DELETE FROM upload_admission WHERE created_at < ?")
+    .bind(now - 7 * 24 * 60 * 60 * 1000).run();
   const result = await env.DB.prepare(`SELECT id,user_id FROM project
     WHERE created_at < ? AND status IN ('uploading','ready','failed','deleting')
     ORDER BY updated_at LIMIT 2`)

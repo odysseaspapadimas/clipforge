@@ -41,6 +41,12 @@ export const projects = sqliteTable("project", {
   status: text("status", { enum: ["uploading", "queued", "processing", "ready", "failed", "deleting"] }).notNull().default("uploading"),
   error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
 }, (table) => [index("project_owner_idx").on(table.userId, table.createdAt)]);
+// Retain admission timestamps for seven days after project deletion so repeated
+// delete/reupload cycles cannot reset the rolling daily limit.
+export const uploadAdmissions = sqliteTable("upload_admission", {
+  id: text("id").primaryKey(), userId: text("user_id").notNull().references(() => users.id),
+  createdAt: integer("created_at").notNull(),
+}, (table) => [index("upload_admission_user_created_idx").on(table.userId, table.createdAt)]);
 export const uploadParts = sqliteTable("upload_part", {
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
   partNumber: integer("part_number").notNull(), etag: text("etag").notNull(), size: integer("size").notNull(),
