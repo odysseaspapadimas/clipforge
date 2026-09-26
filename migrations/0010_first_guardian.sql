@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `media_slot_holder_unique` ON `media_slot` (`holder`);

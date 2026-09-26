@@ -1,0 +1,1 @@
+ALTER TABLE `subscription` ADD `checkout_session_id` text;

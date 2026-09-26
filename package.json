@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test test renderer",
     "test:e2e": "playwright test",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "drizzle-kit generate && bun scripts/sync-migrations.ts",
+    "db:check": "bun scripts/sync-migrations.ts --check",
     "alchemy:plan": "bun alchemy plan"
   },
   "dependencies": {

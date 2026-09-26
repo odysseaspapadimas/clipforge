@@ -1,0 +1,1 @@
+ALTER TABLE `project` ADD `transcription_backend` text;

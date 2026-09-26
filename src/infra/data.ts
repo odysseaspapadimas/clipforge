@@ -1,5 +1,5 @@
 import * as Cloudflare from "alchemy/Cloudflare";
-export const Database = Cloudflare.D1.Database("ClipforgeDatabase", { migrations: "./drizzle" });
+export const Database = Cloudflare.D1.Database("ClipforgeDatabase", { migrations: "./migrations" });
 export const Media = Cloudflare.R2.Bucket("ClipforgePrivateMedia", {
   lifecycleRules: [
     { id: "abort-incomplete-upload", enabled: true, prefix: "users/",
