@@ -47,13 +47,26 @@ async function tryStartProcessor(path: "ingest" | "export", payload: object): Pr
     return false;
   }
 }
-async function billing(path: string, user: { id: string; email: string }) {
+async function billing(path: "checkout" | "portal", user: { id: string; email: string }): Promise<Response> {
   const response = await env.BILLING.fetch(new Request(`https://internal/internal/${path}`, {
     method: "POST", headers: { "content-type": "application/json", "x-clipforge-internal": env.INTERNAL_SECRET },
     body: JSON.stringify({ userId: user.id, email: user.email }),
   }));
+  if (response.status === 409) {
+    // A still-loading studio used to offer Checkout even to active subscribers.
+    // Surface a safe conflict instead of turning that expected response into a 500.
+    const reason = await response.text();
+    const message = reason === "Subscription already active"
+      ? "Your Creator plan is already active. Refresh to manage it."
+      : reason.includes("contact support")
+        ? "Billing needs reconciliation. Please contact support before retrying."
+        : "Checkout is already being prepared. Refresh in a moment before retrying.";
+    return fail(message, 409);
+  }
+  if (response.status === 404 && path === "portal") return fail("No billing account found. Refresh your plan before trying again.", 404);
+  if (response.status === 503) return fail("Billing is temporarily unavailable. Try again shortly.", 503);
   if (!response.ok) throw new Error(`Billing unavailable: ${response.status}`);
-  return response.json();
+  return json(await response.json());
 }
 
 async function mediaResponse(key: string, request: Request, mime: string, filename?: string) {
@@ -101,7 +114,7 @@ export async function handleApi(request: Request): Promise<Response> {
         stagingMinutesRemaining: staging ? Math.max(0, STAGING_TOTAL_INFERENCE_MINUTES - (use?.amount ?? 0)) : null });
     }
     if (request.method === "POST" && path[0] === "billing" && (path[1] === "checkout" || path[1] === "portal") && path.length === 2) {
-      return json(await billing(path[1], user));
+      return billing(path[1], user);
     }
     if (request.method === "GET" && path[0] === "projects" && path.length === 1) {
       // Reconcile old sources when their owner visits. A periodic global sweep is still needed for dormant accounts.

@@ -49,6 +49,11 @@ test("verified customer can upload, edit, export and download; other accounts ca
   await expect(page.getByText(/LOCAL SANDBOX/)).toBeVisible();
   await page.getByRole("button", { name: "Choose the Creator plan" }).click();
   await expect(page.locator(".minute-number")).toContainText("120");
+  await page.route("**/api/me", async (route) => { await new Promise((resolve) => setTimeout(resolve, 1500)); await route.continue(); });
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Checking your plan…" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Manage subscription" })).toBeEnabled();
+  await page.unroute("**/api/me");
   await page.locator('input[type="file"]').setInputFiles({ name: "unpreviewable.mov", mimeType: "video/quicktime", buffer: Buffer.from("not a browser video") });
   await expect(page.getByRole("alert")).toContainText("Convert to H.264/AAC MP4");
   await expect(page.locator(".library-count")).toContainText("0 PROJECTS");
