@@ -6,7 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import Billing from "./src/workers/billing.ts";
 import { Database, Media } from "./src/infra/data.ts";
-import { assertStagingConfiguration, stagingWorkerName } from "./src/infra/staging-config.ts";
+import { assertExpectedCloudflareAccount, assertStagingConfiguration, stagingWorkerName } from "./src/infra/staging-config.ts";
 import type { RenderContainer } from "./src/workers/processor.ts";
 
 // External Deepgram is an explicit, key-gated fallback until Nova-3 on Workers AI
@@ -70,6 +70,8 @@ export default Alchemy.Stack("Clipforge", {
     emailApiKey: process.env.CLIPFORGE_EMAIL_API_KEY, authSecret: process.env.CLIPFORGE_AUTH_SECRET,
     internalSecret: process.env.CLIPFORGE_INTERNAL_SECRET,
   });
+  assertExpectedCloudflareAccount(process.env.CLIPFORGE_EXPECTED_CF_ACCOUNT_ID,
+    (yield* yield* Cloudflare.CloudflareEnvironment).accountId);
   const db = yield* Database;
   const media = yield* Media;
   const processor = yield* Processor;

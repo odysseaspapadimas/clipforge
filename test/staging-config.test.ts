@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { assertStagingConfiguration, stagingWorkerName, type StagingConfiguration } from "../src/infra/staging-config.ts";
+import { assertExpectedCloudflareAccount, assertStagingConfiguration, stagingWorkerName, type StagingConfiguration } from "../src/infra/staging-config.ts";
 
 const valid: StagingConfiguration = {
   stage: "staging", stripeKey: "sk_test_fixture_only",
@@ -21,6 +21,14 @@ test("only allows dedicated HTTPS workers.dev staging and TEST Stripe", () => {
     "https://clipforge-staging-web.account.workers.dev@evil.test", undefined]) {
     expect(() => check({ appOrigin })).toThrow();
   }
+});
+
+test("profile must resolve to the preflighted Cloudflare account", () => {
+  const account = "a".repeat(32);
+  expect(() => assertExpectedCloudflareAccount(account, account)).not.toThrow();
+  expect(() => assertExpectedCloudflareAccount(undefined, account)).toThrow();
+  expect(() => assertExpectedCloudflareAccount("not-a-real-account", account)).toThrow();
+  expect(() => assertExpectedCloudflareAccount("b".repeat(32), account)).toThrow();
 });
 
 test("workers.dev hosts cannot send email; staging requires real sender and separate secrets", () => {

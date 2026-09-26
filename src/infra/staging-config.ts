@@ -13,6 +13,12 @@ export type StagingConfiguration = {
   internalSecret?: string;
 };
 
+export function assertExpectedCloudflareAccount(expected: string | undefined, resolved: string): void {
+  if (!expected || !/^[0-9a-f]{32}$/i.test(expected) || resolved !== expected) {
+    throw new Error("Cloudflare profile account does not match the expected Clipforge staging account.");
+  }
+}
+
 export function assertStagingConfiguration(config: StagingConfiguration): void {
   if (config.stage !== "staging") throw new Error("Only the guarded staging stage is authorized.");
   if (!config.stripeKey?.startsWith("sk_test_")) throw new Error("Stripe TEST-mode credentials are required.");
