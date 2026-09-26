@@ -273,16 +273,20 @@ export async function handleApi(request: Request): Promise<Response> {
         if (project?.status !== "ready" || projectExpired(project.createdAt)) return fail("Source unavailable or expired", 409);
         const subscription = (await db().select().from(subscriptions).where(eq(subscriptions.userId, user.id)).limit(1))[0];
         if (subscription?.status !== "active" || !subscription.periodEnd || subscription.periodEnd <= Date.now()) return fail("Active subscription required to export", 402);
-        const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM render_job WHERE user_id = ? AND clip_id IN (SELECT id FROM clip WHERE project_id = ?)")
-          .bind(user.id, project.id).first<{ count: number }>();
-        if ((count?.count ?? 0) >= 20) return fail("Export limit reached for this source", 429);
+        const existing = await env.DB.prepare("SELECT id,status FROM render_job WHERE clip_id = ? AND revision = ? AND user_id = ?")
+          .bind(clip.id, clip.revision, user.id).first<{ id: string; status: string }>();
+        if (!existing) {
+          const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM render_job WHERE user_id = ? AND clip_id IN (SELECT id FROM clip WHERE project_id = ?)")
+            .bind(user.id, project.id).first<{ count: number }>();
+          if ((count?.count ?? 0) >= 20) return fail("Export limit reached for this source", 429);
+        }
         const jobId = crypto.randomUUID();
         const queuedAt = Date.now();
         await env.DB.prepare(`INSERT OR IGNORE INTO render_job (id,clip_id,user_id,revision,status,queued_at,created_at,updated_at)
           SELECT ?,c.id,c.user_id,c.revision,'queued',?,?,? FROM clip c JOIN project p ON p.id = c.project_id
           WHERE c.id = ? AND c.user_id = ? AND c.revision = ? AND p.status = 'ready'`)
           .bind(jobId, queuedAt, queuedAt, queuedAt, clip.id, user.id, clip.revision).run();
-        const job = await env.DB.prepare("SELECT id,status FROM render_job WHERE clip_id = ? AND revision = ? AND user_id = ?")
+        const job = existing ?? await env.DB.prepare("SELECT id,status FROM render_job WHERE clip_id = ? AND revision = ? AND user_id = ?")
           .bind(clip.id, clip.revision, user.id).first<{ id: string; status: string }>();
         if (!job) return fail("Source changed or was deleted; refresh to continue", 409);
         const startPending = job.status !== "ready" && !await tryStartProcessor("export", { jobId: job.id });

@@ -53,7 +53,7 @@ export async function ensureQueuedExportWorkflow(env: Pick<ProcessorEnv, "EXPORT
   } catch {
     const instance = await env.EXPORT.get(id);
     const state = await instance.status();
-    if (state.status === "errored") await instance.restart();
+    if (state.status === "errored" || state.status === "terminated") await instance.restart();
     else if (!["queued", "running", "waiting", "waitingForPause", "paused"].includes(state.status)) {
       throw new Error("export_workflow_needs_reconciliation");
     }
@@ -87,6 +87,45 @@ export async function sweepExpiredProjects(env: Pick<ProcessorEnv, "DB" | "MEDIA
     }
   }
   return removed;
+}
+
+/** Only a positively terminal Workflow can unlock its claimed job for retry/deletion. */
+export async function reconcileExportTerminal(env: Pick<ProcessorEnv, "DB" | "EXPORT">, jobId: string,
+  now = Date.now()): Promise<"failed" | "active" | "unknown"> {
+  // A failed lookup, or status `unknown`, is not proof work stopped: leave
+  // `running` fenced against deleting its source and alert an operator.
+  const instance = await env.EXPORT.get(`export-${jobId}`);
+  const state = await instance.status();
+  if (state.status === "errored" || state.status === "terminated" || state.status === "complete") {
+    const result = await env.DB.prepare(`UPDATE render_job SET status = 'failed',
+      error = ?,updated_at = ? WHERE id = ? AND status = 'running'`)
+      .bind(state.status === "complete" ? "Export publication needs support; you can delete this source." :
+        "Export stopped before publishing. Retry the export or delete this source.", now, jobId).run();
+    if (state.status === "complete") console.error("completed export remained running", { jobId });
+    return result.meta.changes === 1 ? "failed" : "active";
+  }
+  return state.status === "unknown" ? "unknown" : "active";
+}
+
+/** Inspect stale running jobs in rotating bounded batches; never infer terminal state from elapsed time. */
+export async function reconcileFailedExports(env: Pick<ProcessorEnv, "DB" | "EXPORT">, now = Date.now()): Promise<number> {
+  const result = await env.DB.prepare(`SELECT id FROM render_job WHERE status = 'running'
+    AND updated_at < ? ORDER BY updated_at,id LIMIT 8`)
+    .bind(now - 5 * 60_000).all<{ id: string }>();
+  let failed = 0;
+  for (const { id } of result.results) {
+    try {
+      const outcome = await reconcileExportTerminal(env, id, now);
+      if (outcome === "failed") { failed++; continue; }
+      if (outcome === "unknown") console.error("running export Workflow status unknown; keeping source fenced", { jobId: id });
+    } catch (error) {
+      console.error("running export status unavailable; keeping source fenced", { jobId: id, code: safeErrorCode(error) });
+    }
+    // Rotate live/unknown jobs so a few stalled oldest cannot starve others.
+    await env.DB.prepare("UPDATE render_job SET updated_at = ? WHERE id = ? AND status = 'running'")
+      .bind(now, id).run();
+  }
+  return failed;
 }
 
 export async function reconcileFailedIngests(env: Pick<ProcessorEnv, "DB" | "INGEST">, now = Date.now()): Promise<number> {
@@ -161,9 +200,9 @@ export async function recoverQueuedStarts(env: Pick<ProcessorEnv, "DB" | "INGEST
 export default {
   async scheduled(_event: ScheduledEvent, env: ProcessorEnv, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(Promise.allSettled([
-      sweepExpiredProjects(env), reconcileFailedIngests(env), recoverQueuedStarts(env),
-    ]).then(([retention, ingest, queued]) => {
-      for (const [name, result] of [["retention", retention], ["ingest", ingest], ["queued", queued]] as const) {
+      sweepExpiredProjects(env), reconcileFailedIngests(env), recoverQueuedStarts(env), reconcileFailedExports(env),
+    ]).then(([retention, ingest, queued, exports]) => {
+      for (const [name, result] of [["retention", retention], ["ingest", ingest], ["queued", queued], ["exports", exports]] as const) {
         if (result.status === "rejected") console.error("scheduled maintenance failed", {
           task: name, code: safeErrorCode(result.reason),
         });
@@ -172,6 +211,7 @@ export default {
         removed: retention.status === "fulfilled" ? retention.value : null,
         reconciled: ingest.status === "fulfilled" ? ingest.value : null,
         retriedStarts: queued.status === "fulfilled" ? queued.value : null,
+        terminalExports: exports.status === "fulfilled" ? exports.value : null,
       });
     }));
   },
@@ -220,9 +260,14 @@ export default {
       }
       if (job.status === "running") {
         try {
-          const instance = await env.EXPORT.get(`export-${parsed.data.jobId}`);
-          return sjson({ instanceId: instance.id }, 202);
-        } catch { return sjson({ error: "Export needs support reconciliation" }, 503); }
+          const outcome = await reconcileExportTerminal(env, parsed.data.jobId);
+          if (outcome === "failed") return sjson({ error: "Export stopped. Refresh to retry, or delete this project." }, 409);
+          if (outcome === "unknown") return sjson({ error: "Export status is unknown; retry checking later, or contact support" }, 503);
+          return sjson({ status: "running" }, 202);
+        } catch (error) {
+          console.error("export status check failed", { jobId: parsed.data.jobId, code: safeErrorCode(error) });
+          return sjson({ error: "Export status unavailable; retry checking later" }, 503);
+        }
       }
       return sjson({ error: "Export is already complete" }, 409);
     }
