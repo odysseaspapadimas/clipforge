@@ -2,6 +2,7 @@ import { and, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { z } from "zod";
 import { clipEdit, uploadInput } from "../domain/media.ts";
+import { safeErrorCode } from "../domain/safe-error.ts";
 import { requireUser } from "./auth.ts";
 import { balance } from "./credits.ts";
 import { STAGING_TOTAL_INFERENCE_MINUTES } from "./inference-budget.ts";
@@ -246,7 +247,7 @@ export async function handleApi(request: Request): Promise<Response> {
     }
     return fail("Not found", 404);
   } catch (error) {
-    console.error("api failure", { method: request.method, route: path[0], error: String(error) });
+    console.error("api failure", { method: request.method, route: path[0], code: safeErrorCode(error) });
     return fail("Request could not be completed. Please retry.", 500);
   }
 }

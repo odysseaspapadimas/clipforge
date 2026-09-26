@@ -135,7 +135,9 @@ Bun.serve({ port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0", idleTim
       return await streamedFile(output, dir, "video/mp4", release);
     } catch (error) {
       try { await rm(dir, { recursive: true, force: true }); } finally { release(); }
-      console.error("media operation failed", { operation: path, error: String(error) });
+      const message = error instanceof Error ? error.message : "";
+      console.error("media operation failed", { operation: path,
+        code: /^[a-z][a-z0-9_:-]{0,63}$/i.test(message) ? message : "unclassified_error" });
       return Response.json({ error: "Media processing failed" }, { status: 422 });
     }
   },

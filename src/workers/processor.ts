@@ -3,6 +3,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloud
 import { z } from "zod";
 import type { ProcessorEnv } from "../../alchemy.run.ts";
 import { captionsForClip, discoverCandidates, sourceMinutes, type Word } from "../domain/media.ts";
+import { safeErrorCode } from "../domain/safe-error.ts";
 import type { ChunkManifest } from "../domain/chunks.ts";
 import { mergeTranscriptChunks, prepareAudioChunks, transcribeChunk } from "./native-transcription.ts";
 import { releaseMinutes, reserveMinutes } from "../server/credits.ts";
@@ -181,7 +182,7 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
       });
       return { projectId, status: "ready" };
     } catch (error) {
-      console.error("ingest failed", { projectId, stage: String(error) });
+      console.error("ingest failed", { projectId, code: safeErrorCode(error) });
       await releaseMinutes(this.env.DB, project.user_id, projectId);
       await this.env.DB.prepare("UPDATE project SET status = 'failed',error = ?,updated_at = ? WHERE id = ?")
         .bind(String(error).includes("staging_inference_budget_exhausted")
@@ -241,7 +242,7 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
       });
       return { jobId, status: "ready" };
     } catch (error) {
-      console.error("export failed", { jobId, stage: String(error) });
+      console.error("export failed", { jobId, code: safeErrorCode(error) });
       await this.env.DB.prepare("UPDATE render_job SET status = 'failed',error = 'Export failed; please retry.',updated_at = ? WHERE id = ?")
         .bind(Date.now(), jobId).run();
       throw error;
