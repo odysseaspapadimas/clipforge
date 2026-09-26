@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import type { D1Database } from "@cloudflare/workers-types";
-import { applyCheckoutCompletion, applySubscriptionSnapshot, balance, claimCustomerCreation, grantPeriod, releaseMinutes, reserveMinutes } from "../src/server/credits.ts";
+import { applyCheckoutCompletion, applyInvoicePaymentFailure, applySubscriptionSnapshot, balance, claimCustomerCreation, grantPeriod, releaseMinutes, reserveMinutes } from "../src/server/credits.ts";
 
 function fixture() {
   const sqlite = new Database(":memory:");
@@ -99,6 +99,19 @@ describe("source minute ledger", () => {
     await applyCheckoutCompletion(db, { customerId: "cus_alice", subscriptionId: "sub_new", sessionId: "cs_test_new", createdSeconds: nextCreated });
     expect(sqlite.prepare("SELECT subscription_id,status FROM subscription WHERE user_id='alice'").get())
       .toEqual({ subscription_id: "sub_new", status: "none" });
+    sqlite.close();
+  });
+  test("old invoice failures never overwrite cancellation or a replacement subscription", async () => {
+    const { db, sqlite } = fixture();
+    sqlite.prepare("UPDATE subscription SET subscription_id='sub_old',status='canceled',period_end=? WHERE user_id='alice'")
+      .run(Date.now() - 1);
+    await applyInvoicePaymentFailure(db, { customerId: "cus_alice", subscriptionId: "sub_old" });
+    expect(sqlite.prepare("SELECT status FROM subscription WHERE user_id='alice'").get()).toEqual({ status: "canceled" });
+    sqlite.prepare("UPDATE subscription SET subscription_id='sub_new',status='active' WHERE user_id='alice'").run();
+    await applyInvoicePaymentFailure(db, { customerId: "cus_alice", subscriptionId: "sub_old" });
+    expect(sqlite.prepare("SELECT status FROM subscription WHERE user_id='alice'").get()).toEqual({ status: "active" });
+    await applyInvoicePaymentFailure(db, { customerId: "cus_alice", subscriptionId: "sub_new" });
+    expect(sqlite.prepare("SELECT status FROM subscription WHERE user_id='alice'").get()).toEqual({ status: "past_due" });
     sqlite.close();
   });
   test("out-of-order subscription snapshots cannot revive a deleted subscription", async () => {

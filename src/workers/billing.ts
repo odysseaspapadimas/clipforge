@@ -5,7 +5,7 @@ import * as Config from "effect/Config";
 import * as Layer from "effect/Layer";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { HttpServerRequest } from "effect/unstable/http/HttpServerRequest";
-import { applyCheckoutCompletion, applySubscriptionSnapshot, claimCustomerCreation, grantPeriod } from "../server/credits.ts";
+import { applyCheckoutCompletion, applyInvoicePaymentFailure, applySubscriptionSnapshot, claimCustomerCreation, grantPeriod } from "../server/credits.ts";
 import { Database } from "../infra/data.ts";
 
 const priceCents = 2900;
@@ -73,9 +73,9 @@ export default class Billing extends Cloudflare.Worker<Billing>()(
         }));
       } else if (event.type === "invoice.payment_failed") {
         const customerId = idOf(event.object.customer);
-        if (!customerId) return;
-        yield* database.prepare("UPDATE subscription SET status = 'past_due' WHERE customer_id = ? AND (period_end IS NULL OR period_end <= ?)")
-          .bind(customerId, Date.now()).run();
+        const subscriptionId = idOf(event.object.parent?.subscription_details?.subscription ?? event.object.subscription ?? null);
+        if (!customerId || !subscriptionId) return;
+        yield* Effect.promise(() => applyInvoicePaymentFailure(raw, { customerId, subscriptionId }));
       }
     }));
 

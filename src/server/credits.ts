@@ -53,6 +53,17 @@ export async function applyCheckoutCompletion(db: D1Database, input: {
     .bind(subscriptionId, customerId, sessionId, createdSeconds * 1000 + 999).run();
 }
 
+/** A delayed failure for a prior subscription must not damage a new plan or undo a cancellation. */
+export async function applyInvoicePaymentFailure(db: D1Database, input: {
+  customerId: string; subscriptionId: string;
+}): Promise<void> {
+  if (!input.customerId.startsWith("cus_") || !input.subscriptionId.startsWith("sub_")) return;
+  await db.prepare(`UPDATE subscription SET status = 'past_due'
+    WHERE customer_id = ? AND subscription_id = ? AND status NOT IN ('canceled','unpaid','paused')
+    AND (period_end IS NULL OR period_end <= ?)`)
+    .bind(input.customerId, input.subscriptionId, Date.now()).run();
+}
+
 /** Stripe webhook delivery is unordered: deletion is terminal for the same subscription ID. */
 export async function applySubscriptionSnapshot(db: D1Database, input: {
   customerId: string; subscriptionId: string; status: string;
