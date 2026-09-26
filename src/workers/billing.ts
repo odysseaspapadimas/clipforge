@@ -5,7 +5,7 @@ import * as Config from "effect/Config";
 import * as Layer from "effect/Layer";
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse";
 import { HttpServerRequest } from "effect/unstable/http/HttpServerRequest";
-import { claimCustomerCreation, grantPeriod } from "../server/credits.ts";
+import { applyCheckoutCompletion, applySubscriptionSnapshot, claimCustomerCreation, grantPeriod } from "../server/credits.ts";
 import { Database } from "../infra/data.ts";
 
 const priceCents = 2900;
@@ -60,22 +60,17 @@ export default class Billing extends Cloudflare.Worker<Billing>()(
         const customerId = idOf(object.customer);
         if (!customerId) return;
         const subscriptionId = idOf(object.subscription);
-        if (subscriptionId) {
-          yield* database.prepare(`UPDATE subscription SET subscription_id = ?,
-            status = CASE WHEN status IN ('canceled','unpaid','paused') THEN 'none' ELSE status END
-            WHERE customer_id = ? AND (subscription_id IS NULL OR subscription_id = ? OR status IN ('canceled','unpaid','paused'))`)
-            .bind(subscriptionId, customerId, subscriptionId).run();
-        }
+        if (subscriptionId) yield* Effect.promise(() => applyCheckoutCompletion(raw, {
+          customerId, subscriptionId, createdSeconds: object.created,
+        }));
       } else if (event.type === "customer.subscription.created" ||
         event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
         const subscription = event.object;
         const customerId = idOf(subscription.customer);
         if (!customerId) return;
-        yield* database.prepare(`UPDATE subscription SET subscription_id = ?,
-          status = CASE WHEN ? IN ('canceled','unpaid','paused') THEN ?
-            WHEN current_invoice IS NOT NULL AND period_end > ? THEN 'active' ELSE 'none' END
-          WHERE customer_id = ? AND (subscription_id IS NULL OR subscription_id = ?)`)
-          .bind(subscription.id, subscription.status, subscription.status, Date.now(), customerId, subscription.id).run();
+        yield* Effect.promise(() => applySubscriptionSnapshot(raw, {
+          customerId, subscriptionId: subscription.id, status: subscription.status,
+        }));
       } else if (event.type === "invoice.payment_failed") {
         const customerId = idOf(event.object.customer);
         if (!customerId) return;

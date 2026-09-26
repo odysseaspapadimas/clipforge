@@ -39,6 +39,34 @@ export async function releaseMinutes(db: D1Database, userId: string, projectId: 
     WHERE key = ? AND user_id = ? AND NOT EXISTS (SELECT 1 FROM minute_ledger WHERE key = ?)`)
     .bind(`release:${projectId}`, Date.now(), `reserve:${projectId}`, userId, `release:${projectId}`).run();
 }
+/** Only the currently pending checkout can install a subscription ID; older replays cannot clear a cancellation. */
+export async function applyCheckoutCompletion(db: D1Database, input: {
+  customerId: string; subscriptionId: string; createdSeconds: number;
+}): Promise<void> {
+  const { customerId, subscriptionId, createdSeconds } = input;
+  if (!customerId.startsWith("cus_") || !subscriptionId.startsWith("sub_") ||
+    !Number.isSafeInteger(createdSeconds) || createdSeconds <= 0) return;
+  // Stripe timestamps have second precision; allow rounding of the creation second.
+  await db.prepare(`UPDATE subscription SET subscription_id = ?,status = 'none'
+    WHERE customer_id = ? AND status = 'checkout_pending' AND checkout_created_at IS NOT NULL
+    AND checkout_created_at <= ?`)
+    .bind(subscriptionId, customerId, createdSeconds * 1000 + 999).run();
+}
+
+/** Stripe webhook delivery is unordered: deletion is terminal for the same subscription ID. */
+export async function applySubscriptionSnapshot(db: D1Database, input: {
+  customerId: string; subscriptionId: string; status: string;
+}): Promise<void> {
+  const { customerId, subscriptionId, status } = input;
+  if (!customerId.startsWith("cus_") || !subscriptionId.startsWith("sub_")) return;
+  await db.prepare(`UPDATE subscription SET subscription_id = ?,
+    status = CASE WHEN status = 'canceled' AND subscription_id = ? THEN 'canceled'
+      WHEN ? IN ('canceled','unpaid','paused') THEN ?
+      WHEN current_invoice IS NOT NULL AND period_end > ? THEN 'active' ELSE 'none' END
+    WHERE customer_id = ? AND (subscription_id IS NULL OR subscription_id = ?)`)
+    .bind(subscriptionId, subscriptionId, status, status, Date.now(), customerId, subscriptionId).run();
+}
+
 export async function grantPeriod(db: D1Database, input: {
   userId: string; subscriptionId: string; invoiceId: string; minutes: number;
   periodStart: number; periodEnd: number;
