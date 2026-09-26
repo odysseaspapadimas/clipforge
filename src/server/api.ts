@@ -1,13 +1,14 @@
 import { and, desc, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import { z } from "zod";
-import { clipEdit, uploadInput } from "../domain/media.ts";
+import { captionsForExpandedCut, clipEdit, uploadInput, type Word } from "../domain/media.ts";
 import { safeErrorCode } from "../domain/safe-error.ts";
 import { requireUser } from "./auth.ts";
 import { balance } from "./credits.ts";
 import { STAGING_TOTAL_INFERENCE_MINUTES } from "./inference-budget.ts";
 import { env } from "./env.ts";
 import { readJson } from "./json.ts";
+import { MEDIA_RETENTION_MS, projectExpired, purgeProject } from "./project-retention.ts";
 import { clips, projects, subscriptions } from "./schema.ts";
 
 const PART_BYTES = 32 * 1024 * 1024;
@@ -17,7 +18,7 @@ const fail = (error: string, status: number) => json({ error }, status);
 const db = () => drizzle(env.DB);
 function publicProject(project: typeof projects.$inferSelect) {
   const { sourceKey: _sourceKey, uploadId: _uploadId, ...safe } = project;
-  return safe;
+  return { ...safe, status: projectExpired(project.createdAt) && project.status !== "deleting" ? "expired" : project.status };
 }
 function publicClip(clip: typeof clips.$inferSelect) {
   const { outputKey: _outputKey, ...safe } = clip;
@@ -95,13 +96,22 @@ export async function handleApi(request: Request): Promise<Response> {
       return json(await billing(path[1], user));
     }
     if (request.method === "GET" && path[0] === "projects" && path.length === 1) {
+      // Reconcile old sources when their owner visits. A periodic global sweep is still needed for dormant accounts.
+      const stale = await env.DB.prepare(`SELECT id FROM project WHERE user_id = ?
+        AND (status = 'deleting' OR (created_at < ? AND status IN ('uploading','ready','failed')))
+        ORDER BY created_at LIMIT 10`)
+        .bind(user.id, Date.now() - MEDIA_RETENTION_MS - 86_400_000).all<{ id: string }>();
+      for (const project of stale.results) {
+        try { await purgeProject(env.DB, env.MEDIA, user.id, project.id); }
+        catch (error) { console.error("project retention retry failed", { projectId: project.id, code: safeErrorCode(error) }); }
+      }
       const items = await db().select().from(projects).where(eq(projects.userId, user.id))
         .orderBy(desc(projects.createdAt)).limit(100);
       return json({ projects: items.map(publicProject) });
     }
     if (request.method === "POST" && path[0] === "uploads" && path.length === 1) {
       const parsed = uploadInput.safeParse(await readJson(request));
-      if (!parsed.success) return fail("Choose an MP4, MOV or WebM under 5 GiB", 400);
+      if (!parsed.success) return fail("Choose a browser-playable MP4 or WebM under 5 GiB (convert MOV first)", 400);
       const subscription = (await db().select().from(subscriptions).where(eq(subscriptions.userId, user.id)).limit(1))[0];
       if (subscription?.status !== "active" || !subscription.periodEnd || subscription.periodEnd <= Date.now() ||
         await balance(env.DB, user.id) < 1) return fail("An active plan with remaining source minutes is required", 402);
@@ -152,6 +162,7 @@ export async function handleApi(request: Request): Promise<Response> {
         return json({ partNumber: uploaded.partNumber, etag: uploaded.etag });
       }
       if (request.method === "POST" && path[2] === "complete" && path.length === 3) {
+        if (project.status === "deleting") return fail("Project is being deleted", 409);
         if (project.status !== "uploading") {
           const previous = await env.MEDIA.head(project.sourceKey);
           if (previous?.size !== project.fileSize) return fail("Upload not complete", 409);
@@ -172,21 +183,25 @@ export async function handleApi(request: Request): Promise<Response> {
           await env.MEDIA.delete(project.sourceKey);
           return fail("Uploaded file size did not match", 400);
         }
-        await db().update(projects).set({ status: "queued", uploadId: null, updatedAt: Date.now() })
-          .where(and(eq(projects.id, project.id), eq(projects.userId, user.id)));
+        const queued = await env.DB.prepare("UPDATE project SET status = 'queued',upload_id = NULL,updated_at = ? WHERE id = ? AND user_id = ? AND status = 'uploading'")
+          .bind(Date.now(), project.id, user.id).run();
+        if (queued.meta.changes !== 1) { await env.MEDIA.delete(project.sourceKey); return fail("Upload was deleted", 409); }
         await startProcessor("ingest", { projectId: project.id });
         return json({ projectId: project.id, status: "queued" }, 202);
       }
       if (request.method === "DELETE" && path.length === 2) {
-        if (project.status !== "uploading") return fail("Upload already submitted", 409);
-        if (project.uploadId) await env.MEDIA.resumeMultipartUpload(project.sourceKey, project.uploadId).abort();
-        await db().delete(projects).where(and(eq(projects.id, project.id), eq(projects.userId, user.id)));
-        return json({ ok: true });
+        const result = await purgeProject(env.DB, env.MEDIA, user.id, project.id);
+        return result === "busy" ? fail("Wait for processing or exports to finish before deleting", 409) : json({ ok: true });
       }
     }
     if (path[0] === "projects" && path[1]) {
       const project = await projectFor(user.id, path[1]);
       if (!project) return fail("Not found", 404);
+      if (request.method === "DELETE" && path.length === 2) {
+        const result = await purgeProject(env.DB, env.MEDIA, user.id, project.id);
+        return result === "busy" ? fail("Wait for processing or exports to finish before deleting", 409) : json({ ok: true });
+      }
+      if (project.status === "deleting") return fail("Project deletion in progress; retry deletion", 409);
       if (request.method === "GET" && path.length === 2) {
         const projectClips = await db().select().from(clips).where(and(eq(clips.userId, user.id), eq(clips.projectId, project.id)))
           .orderBy(clips.startMs);
@@ -196,6 +211,7 @@ export async function handleApi(request: Request): Promise<Response> {
         return json({ project: publicProject(project), clips: projectClips.map(publicClip), jobs: jobs.results });
       }
       if (request.method === "GET" && path[2] === "words" && path.length === 3) {
+        if (projectExpired(project.createdAt)) return fail("Source expired. Delete this project from your library.", 410);
         const startMs = Math.max(0, Number(url.searchParams.get("startMs") ?? 0));
         const endMs = Math.min(project.durationMs ?? 0, Number(url.searchParams.get("endMs") ?? startMs + 180_000));
         if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs || endMs - startMs > 180_000) return fail("Invalid transcript range", 400);
@@ -204,6 +220,7 @@ export async function handleApi(request: Request): Promise<Response> {
         return json({ words: rows.results });
       }
       if (request.method === "GET" && path[2] === "media" && path.length === 3 && project.status !== "uploading") {
+        if (projectExpired(project.createdAt)) return fail("Source expired", 410);
         return mediaResponse(project.sourceKey, request, project.mimeType);
       }
     }
@@ -214,18 +231,29 @@ export async function handleApi(request: Request): Promise<Response> {
         const input = clipEdit.safeParse(await readJson(request));
         if (!input.success) return fail("Invalid clip edits", 400);
         const project = await projectFor(user.id, clip.projectId);
-        if (!project?.durationMs || input.data.endMs > project.durationMs) return fail("Clip exceeds source duration", 400);
+        if (!project?.durationMs || project.status !== "ready" || projectExpired(project.createdAt) ||
+          input.data.endMs > project.durationMs) return fail("Source unavailable or clip exceeds its duration", 400);
         const { revision, ...values } = input.data;
+        if (values.startMs < clip.startMs || values.endMs > clip.endMs) {
+          const rows = await env.DB.prepare(`SELECT text,start_ms AS startMs,end_ms AS endMs,speaker,confidence
+            FROM word WHERE project_id = ? AND start_ms >= ? AND end_ms <= ? ORDER BY start_ms,end_ms LIMIT 700`)
+            .bind(project.id, values.startMs, values.endMs).all<Word>();
+          if (rows.results.length === 700) return fail("This cut has too many transcript words to sync; shorten it", 400);
+          values.captions = captionsForExpandedCut(values.captions, rows.results, clip.startMs, clip.endMs,
+            values.startMs, values.endMs);
+          if (!clipEdit.safeParse({ ...values, revision }).success) return fail("Cut has too many captions or invalid timing; shorten the cut", 400);
+        }
         const result = await env.DB.prepare(`UPDATE clip SET title = ?,start_ms = ?,end_ms = ?,crop_x = ?,crop_y = ?,zoom = ?,captions = ?,
-          revision = revision + 1,status = 'draft',output_key = NULL,updated_at = ? WHERE id = ? AND user_id = ? AND revision = ?`)
+          revision = revision + 1,status = 'draft',output_key = NULL,updated_at = ? WHERE id = ? AND user_id = ? AND revision = ?
+          AND EXISTS (SELECT 1 FROM project WHERE id = ? AND user_id = ? AND status = 'ready')`)
           .bind(values.title, values.startMs, values.endMs, values.cropX, values.cropY, values.zoom,
-            JSON.stringify(values.captions), Date.now(), clip.id, user.id, revision).run();
+            JSON.stringify(values.captions), Date.now(), clip.id, user.id, revision, project.id, user.id).run();
         if (result.meta.changes !== 1) return fail("This clip changed in another tab. Refresh to continue.", 409);
-        return json({ revision: revision + 1 });
+        return json({ revision: revision + 1, captions: values.captions });
       }
       if (request.method === "POST" && path[2] === "export" && path.length === 3) {
         const project = await projectFor(user.id, clip.projectId);
-        if (project?.status !== "ready") return fail("Source processing is not complete", 409);
+        if (project?.status !== "ready" || projectExpired(project.createdAt)) return fail("Source unavailable or expired", 409);
         const subscription = (await db().select().from(subscriptions).where(eq(subscriptions.userId, user.id)).limit(1))[0];
         if (subscription?.status !== "active" || !subscription.periodEnd || subscription.periodEnd <= Date.now()) return fail("Active subscription required to export", 402);
         const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM render_job WHERE user_id = ? AND clip_id IN (SELECT id FROM clip WHERE project_id = ?)")
@@ -233,15 +261,19 @@ export async function handleApi(request: Request): Promise<Response> {
         if ((count?.count ?? 0) >= 20) return fail("Export limit reached for this source", 429);
         const jobId = crypto.randomUUID();
         await env.DB.prepare(`INSERT OR IGNORE INTO render_job (id,clip_id,user_id,revision,status,created_at,updated_at)
-          VALUES (?,?,?,?,'queued',?,?)`).bind(jobId, clip.id, user.id, clip.revision, Date.now(), Date.now()).run();
+          SELECT ?,c.id,c.user_id,c.revision,'queued',?,? FROM clip c JOIN project p ON p.id = c.project_id
+          WHERE c.id = ? AND c.user_id = ? AND c.revision = ? AND p.status = 'ready'`)
+          .bind(jobId, Date.now(), Date.now(), clip.id, user.id, clip.revision).run();
         const job = await env.DB.prepare("SELECT id,status FROM render_job WHERE clip_id = ? AND revision = ? AND user_id = ?")
           .bind(clip.id, clip.revision, user.id).first<{ id: string; status: string }>();
-        if (!job) throw new Error("Render job missing");
+        if (!job) return fail("Source changed or was deleted; refresh to continue", 409);
         if (job.status !== "ready") await startProcessor("export", { jobId: job.id });
         return json({ jobId: job.id, status: job.status }, 202);
       }
       if (request.method === "GET" && path[2] === "download" && path.length === 3) {
         if (!clip.outputKey || clip.status !== "ready" || clip.renderedRevision !== clip.revision) return fail("Export not ready", 409);
+        const project = await projectFor(user.id, clip.projectId);
+        if (!project || project.status === "deleting" || projectExpired(project.createdAt)) return fail("Export expired or deleted", 410);
         return mediaResponse(clip.outputKey, request, "video/mp4", `clipforge-${clip.id}.mp4`);
       }
     }

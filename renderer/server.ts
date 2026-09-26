@@ -3,13 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { buildAss, cropFilter, renderOptions } from "./captions.ts";
+import { displayDimensions } from "../src/domain/orientation.ts";
 
 const MAX_BYTES = 5 * 1024 ** 3;
 const MAX_DURATION_MS = 7_200_000;
 const SEGMENT_SECONDS = 60;
 const probeSchema = z.object({
   format: z.object({ duration: z.coerce.number().positive() }),
-  streams: z.array(z.object({ codec_type: z.string(), width: z.number().optional(), height: z.number().optional() }).passthrough()),
+  streams: z.array(z.object({ codec_type: z.string(), width: z.number().optional(), height: z.number().optional(),
+    tags: z.object({ rotate: z.coerce.number().optional() }).optional(),
+    side_data_list: z.array(z.object({ rotation: z.number().optional() }).passthrough()).optional() }).passthrough()),
 });
 async function processCommand(command: string, args: string[], timeoutMs: number): Promise<string> {
   const child = Bun.spawn([command, ...args], { stdout: "pipe", stderr: "pipe" });
@@ -22,13 +25,16 @@ async function processCommand(command: string, args: string[], timeoutMs: number
 }
 async function inspect(file: string) {
   const parsed = probeSchema.parse(JSON.parse(await processCommand("ffprobe", ["-v", "error", "-show_entries",
-    "format=duration:stream=codec_type,width,height", "-of", "json", file], 30_000)));
+    "format=duration:stream=codec_type,width,height:stream_tags=rotate:stream_side_data=rotation", "-of", "json", file], 30_000)));
   const video = parsed.streams.find((stream) => stream.codec_type === "video" && stream.width && stream.height);
   const audio = parsed.streams.some((stream) => stream.codec_type === "audio");
   if (!video?.width || !video.height || !audio || video.width > 7680 || video.height > 4320 || parsed.format.duration * 1000 > MAX_DURATION_MS) {
     throw new Error("Unsupported video: requires video and audio, <=2 hours and <=8K input");
   }
-  return { durationMs: Math.round(parsed.format.duration * 1000), width: video.width, height: video.height };
+  const display = displayDimensions({ width: video.width, height: video.height,
+    tags: video.tags, side_data_list: video.side_data_list });
+  if (display.width > 7680 || display.height > 4320) throw new Error("Display-oriented video exceeds size limit");
+  return { durationMs: Math.round(parsed.format.duration * 1000), ...display };
 }
 async function saveUpload(request: Request, path: string) {
   const length = Number(request.headers.get("content-length") ?? 0);

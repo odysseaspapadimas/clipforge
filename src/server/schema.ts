@@ -38,7 +38,7 @@ export const projects = sqliteTable("project", {
   transcriptChunks: integer("transcript_chunks").notNull().default(0),
   transcriptChunksDone: integer("transcript_chunks_done").notNull().default(0),
   transcriptionBackend: text("transcription_backend", { enum: ["workers-ai", "deepgram"] }),
-  status: text("status", { enum: ["uploading", "queued", "processing", "ready", "failed"] }).notNull().default("uploading"),
+  status: text("status", { enum: ["uploading", "queued", "processing", "ready", "failed", "deleting"] }).notNull().default("uploading"),
   error: text("error"), createdAt: integer("created_at").notNull(), updatedAt: integer("updated_at").notNull(),
 }, (table) => [index("project_owner_idx").on(table.userId, table.createdAt)]);
 export const uploadParts = sqliteTable("upload_part", {
@@ -85,7 +85,8 @@ export const mediaSlots = sqliteTable("media_slot", {
   leaseUntil: integer("lease_until").notNull().default(0),
 }, (table) => [uniqueIndex("media_slot_holder_unique").on(table.holder)]);
 export const inferenceSpend = sqliteTable("inference_spend", {
-  projectId: text("project_id").primaryKey().references(() => projects.id),
+  // Keep aggregate staging spend after project purge, without retaining customer/media rows.
+  projectId: text("project_id").primaryKey(),
   minutes: integer("minutes").notNull(), createdAt: integer("created_at").notNull(),
 });
 export const minuteLedger = sqliteTable("minute_ledger", {

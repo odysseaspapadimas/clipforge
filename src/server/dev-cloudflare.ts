@@ -8,6 +8,7 @@ import { pipeline } from "node:stream/promises";
 import { DatabaseSync } from "node:sqlite";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import { captionsForClip, discoverCandidates, sourceMinutes, type Word } from "../domain/media.ts";
+import { displayDimensions } from "../domain/orientation.ts";
 import { grantPeriod, releaseMinutes, reserveMinutes } from "./credits.ts";
 
 const root = resolve(process.cwd(), ".local-dev");
@@ -70,7 +71,18 @@ const MEDIA = {
     else await pipeline(Readable.fromWeb(input as any), createWriteStream(path));
     return info(key);
   },
-  delete: async (key: string) => { await rm(mediaPath(key), { force: true }); },
+  delete: async (keys: string | string[]) => {
+    for (const key of Array.isArray(keys) ? keys : [keys]) await rm(mediaPath(key), { force: true });
+  },
+  list: async ({ prefix = "", cursor, limit = 1000 }: { prefix?: string; cursor?: string; limit?: number }) => {
+    const keys = readdirSync(mediaRoot, { recursive: true, withFileTypes: true })
+      .filter((item) => item.isFile()).map((item) => join(item.parentPath, item.name).slice(mediaRoot.length + 1))
+      .filter((key) => key.startsWith(prefix)).sort();
+    const start = cursor ? keys.findIndex((key) => key > cursor) : 0;
+    const objects = keys.slice(Math.max(start, 0), Math.max(start, 0) + limit).map((key) => info(key));
+    return { objects, truncated: Math.max(start, 0) + limit < keys.length,
+      cursor: objects.at(-1)?.key };
+  },
   createMultipartUpload: async (key: string) => ({ key, uploadId: crypto.randomUUID() }),
   resumeMultipartUpload: (key: string, uploadId: string) => ({
     uploadPart: async (partNumber: number, value: ReadableStream) => {
@@ -111,15 +123,16 @@ async function localIngest(projectId: string) {
   const project = await DB.prepare("SELECT * FROM project WHERE id = ?").bind(projectId).first<{ id: string; user_id: string; source_key: string; status: string }>();
   if (!project || project.status === "ready") return;
   try {
-    const raw = JSON.parse(await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", mediaPath(project.source_key)]));
+    const raw = JSON.parse(await run("ffprobe", ["-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height:stream_tags=rotate:stream_side_data=rotation", "-of", "json", mediaPath(project.source_key)]));
     const video = raw.streams.find((stream: any) => stream.codec_type === "video");
     const audio = raw.streams.some((stream: any) => stream.codec_type === "audio");
     if (!video || !audio) throw new Error("The recording must contain audio and video.");
     const durationMs = Math.round(Number(raw.format.duration) * 1000);
     const minutes = sourceMinutes(durationMs);
     if (!await reserveMinutes(DB, project.user_id, projectId, minutes)) throw new Error("Not enough source minutes for this recording.");
+    const display = displayDimensions(video);
     await DB.prepare("UPDATE project SET status='processing',duration_ms=?,width=?,height=?,updated_at=? WHERE id=?")
-      .bind(durationMs, video.width, video.height, Date.now(), projectId).run();
+      .bind(durationMs, display.width, display.height, Date.now(), projectId).run();
     const tokens = SAMPLE.split(/\s+/);
     const sampleWords: Word[] = Array.from({ length: Math.min(240, Math.max(20, Math.floor(durationMs / 550))) }, (_, index) => ({
       text: tokens[index % tokens.length], startMs: Math.floor(index * durationMs / Math.min(240, Math.max(20, Math.floor(durationMs / 550)))),
@@ -147,7 +160,7 @@ async function localExport(jobId: string) {
   if (!job) return;
   try {
     await DB.prepare("UPDATE render_job SET status='running',updated_at=? WHERE id=?").bind(Date.now(),jobId).run();
-    const response = await fetch("http://127.0.0.1:8080/render", { method: "POST", headers: { "x-clipforge-render": JSON.stringify({
+    const response = await fetch(`http://127.0.0.1:${process.env.CLIPFORGE_RENDERER_PORT ?? "8080"}/render`, { method: "POST", headers: { "x-clipforge-render": JSON.stringify({
       startMs: job.start_ms,endMs: job.end_ms,cropX: job.crop_x,cropY: job.crop_y,zoom: job.zoom,captions: JSON.parse(job.captions),
     }) }, body: createReadStream(mediaPath(job.source_key)) as any, duplex: "half" } as RequestInit);
     if (!response.ok || !response.body) throw new Error(`Local renderer unavailable (${response.status}); run bun run dev:renderer`);

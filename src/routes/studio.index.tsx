@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { createAuthClient } from "better-auth/react";
-import { ArrowRight, ArrowUpRight, Clock3, CloudUpload, FileVideo2, LoaderCircle, LogOut, Play, Sparkles, Upload } from "lucide-react";
+import { ArrowRight, ArrowUpRight, Clock3, CloudUpload, FileVideo2, LoaderCircle, LogOut, Play, Sparkles, Trash2, Upload } from "lucide-react";
+import { preflightBrowserVideo } from "../domain/browser-preview.ts";
 import { useEffect, useState, type ChangeEvent } from "react";
 
 export const Route = createFileRoute("/studio/")({ component: Studio });
@@ -39,6 +40,13 @@ function Studio() {
     try { const result = await api<{ url: string }>(`billing/${operation}`, { method: "POST" }); window.location.assign(result.url); }
     catch (cause) { setError(String(cause)); setBusy(false); }
   }
+  async function removeProject(project: Project) {
+    if (!window.confirm(`Permanently delete “${project.title}” and its recording, transcript and exports? This cannot be undone. Billing usage is retained.`)) return;
+    setBusy(true); setError("");
+    try { await api(`projects/${project.id}`, { method: "DELETE" }); if (resumeId === project.id) setResumeId(null); await refresh(); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not delete project; please retry."); }
+    finally { setBusy(false); }
+  }
   async function upload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]; if (!file) return;
     setUploading(true); setError(""); setProgress(0);
@@ -47,8 +55,10 @@ function Studio() {
         throw new Error("Choose a plan with available source minutes before uploading.");
       }
       const title = file.name;
-      const mimeType = file.type === "video/quicktime" || file.name.toLowerCase().endsWith(".mov") ? "video/quicktime" :
-        file.type === "video/webm" ? "video/webm" : "video/mp4";
+      const extension = file.name.toLowerCase().split(".").pop();
+      if (extension !== "mp4" && extension !== "webm") throw new Error("MOV/ProRes is not browser-previewable here. Convert to H.264/AAC MP4 or browser-playable WebM before upload.");
+      const mimeType = extension === "webm" ? "video/webm" : "video/mp4";
+      await preflightBrowserVideo(file, mimeType);
       const session = resumeId ? await api<{ projectId: string; size: number; partBytes: number; parts: Array<{ partNumber: number; etag: string }> }>(`uploads/${resumeId}`)
         : await api<{ projectId: string; partBytes: number; parts: number }>("uploads", { method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ name: title, size: file.size, mimeType }) });
@@ -91,13 +101,15 @@ function Studio() {
     {error && <div className="notice error" role="alert">{error}</div>}
     <div className="studio-grid"><section className="upload-panel"><div className="upload-head"><div className="panel-icon"><CloudUpload size={26} /></div><span>NEW PROJECT</span></div>
       <h2>What's the conversation?</h2><p>Upload an episode or interview. We'll find the highlights and leave the finishing touches to you.</p>
-      <label className={`drop-zone ${uploading ? "uploading" : ""}`}><input type="file" disabled={uploading} accept="video/mp4,video/quicktime,video/webm,.mov" onChange={upload} /><div className="drop-illustration"><Upload size={32} strokeWidth={1.5} /></div><strong>{uploading ? `Uploading · ${progress}%` : resumeId ? "Select the same file to resume" : "Choose a video file"}</strong><span>MP4, MOV or WebM · Up to 2 hours / 5 GiB</span>{uploading && <div className="progress-bar"><i style={{ width: `${progress}%` }} /></div>}</label>
+      <label className={`drop-zone ${uploading ? "uploading" : ""}`}><input type="file" disabled={uploading} accept="video/mp4,video/webm,.mp4,.webm" onChange={upload} /><div className="drop-illustration"><Upload size={32} strokeWidth={1.5} /></div><strong>{uploading ? `Uploading · ${progress}%` : resumeId ? "Select the same file to resume" : "Choose a video file"}</strong><span>Browser-playable MP4 or WebM · Up to 2 hours / 5 GiB. Convert MOV/ProRes to H.264/AAC MP4 first.</span>{uploading && <div className="progress-bar"><i style={{ width: `${progress}%` }} /></div>}</label>
       {resumeId && <button className="text-button" onClick={() => setResumeId(null)}>Start a different upload</button>}
-      <div className="upload-help"><Sparkles size={16} /><span>English audio works best. Only successfully processed sources use your minutes. Download exports within 90 days.</span></div>
+      <div className="upload-help"><Sparkles size={16} /><span>English audio works best. Only successfully processed sources use your minutes. Recordings and exports expire within 90 days; delete a project anytime after processing.</span></div>
     </section><aside className="plan-panel"><span className="panel-label">YOUR PLAN</span><h3>{account?.subscription?.status === "active" ? "Creator plan" : "Make your first moment."}</h3><div className="minute-number">{account?.minutes ?? "—"}<span>minutes available</span></div><div className="plan-progress"><i style={{ width: `${Math.min(100, Math.max(0, (account?.minutes ?? 0) / 120 * 100))}%` }} /></div><p>Source minutes reset each billing month. Editing and exporting don't spend extra minutes.</p><button disabled={busy} className="button button-dark full" onClick={() => billing(account?.subscription?.status === "active" ? "portal" : "checkout")}>{busy && <LoaderCircle size={16} className="spin" />}{account?.subscription?.status === "active" ? "Manage subscription" : "Choose the Creator plan"}<ArrowUpRight size={18} /></button></aside></div>
     <section className="library"><div className="library-heading"><div><span className="eyebrow">YOUR LIBRARY</span><h2>Every conversation, <em>one place.</em></h2></div><span className="library-count">{projects.length} PROJECT{projects.length !== 1 ? "S" : ""}</span></div>
       {projects.length === 0 ? <div className="empty-state"><FileVideo2 size={42} strokeWidth={1.4} /><h3>Your next great clip starts with an upload.</h3><p>Your projects will appear here when you add a video.</p></div> :
         <div className="project-list">{projects.map((project) => <article className="project-row" key={project.id}><div className="project-thumbnail"><Play size={20} fill="currentColor" /></div><div className="project-main"><strong>{project.title}</strong><span>{new Date(project.createdAt).toLocaleDateString()} <b>·</b> <Clock3 size={13} /> {duration(project.durationMs)}</span></div><span className={`status ${project.status}`}>{project.status}</span>
-          {project.status === "uploading" ? <button className="project-open" onClick={() => { setResumeId(project.id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Resume upload <ArrowRight size={16} /></button> : <Link to="/studio/$projectId" params={{ projectId: project.id }} className="project-open">Open project <ArrowRight size={16} /></Link>}</article>)}</div>}
+          {project.status === "uploading" ? <button className="project-open" onClick={() => { setResumeId(project.id); window.scrollTo({ top: 0, behavior: "smooth" }); }}>Resume upload <ArrowRight size={16} /></button> : project.status === "expired" || project.status === "deleting" ?
+            <span className="project-expired">{project.status === "expired" ? "Media expired" : "Deleting… retry below"}</span> : <Link to="/studio/$projectId" params={{ projectId: project.id }} className="project-open">Open project <ArrowRight size={16} /></Link>}
+          <button className="project-delete" aria-label={`Delete ${project.title}`} title="Permanently delete project and media" disabled={busy || ["queued", "processing"].includes(project.status)} onClick={() => void removeProject(project)}><Trash2 size={17} /></button></article>)}</div>}
     </section></div>;
 }

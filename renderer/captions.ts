@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { cropRect } from "../src/domain/crop.ts";
 
 export const renderOptions = z.object({
   startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(),
@@ -44,12 +45,6 @@ export function buildAss(options: RenderOptions): string {
 
 /** Crop fits 9:16 within the input before applying focal-point offset and zoom. */
 export function cropFilter(width: number, height: number, cropX: number, cropY: number, zoom: number): string {
-  const aspect = 9 / 16;
-  const baseW = Math.min(width, height * aspect);
-  const baseH = baseW / aspect;
-  const cropW = Math.max(2, Math.floor(baseW * 1000 / zoom / 2) * 2);
-  const cropH = Math.max(2, Math.floor(baseH * 1000 / zoom / 2) * 2);
-  const left = Math.max(0, Math.min(width - cropW, Math.round((width - cropW) * cropX / 1000 / 2) * 2));
-  const top = Math.max(0, Math.min(height - cropH, Math.round((height - cropH) * cropY / 1000 / 2) * 2));
-  return `crop=${cropW}:${cropH}:${left}:${top},scale=1080:1920:flags=lanczos`;
+  const rect = cropRect(width, height, cropX, cropY, zoom);
+  return `crop=${rect.width}:${rect.height}:${rect.left}:${rect.top},scale=1080:1920:flags=lanczos`;
 }

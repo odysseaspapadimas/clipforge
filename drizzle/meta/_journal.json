@@ -85,6 +85,13 @@
       "when": 1790408406415,
       "tag": "0011_tan_scalphunter",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1790408985687,
+      "tag": "0012_medical_winter_soldier",
+      "breakpoints": true
     }
   ]
 }

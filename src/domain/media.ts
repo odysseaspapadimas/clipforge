@@ -1,13 +1,13 @@
 import { z } from "zod";
 
-export const MAX_UPLOAD_BYTES = 5 * 1024 ** 3 - 5 * 1024 ** 2;
+export const MAX_UPLOAD_BYTES = 5 * 1024 ** 3;
 export const MAX_DURATION_MS = 2 * 60 * 60 * 1000;
 export const MAX_CLIP_MS = 180_000;
 export const MIN_CLIP_MS = 8_000;
 export const uploadInput = z.object({
   name: z.string().trim().min(1).max(180),
   size: z.number().int().positive().max(MAX_UPLOAD_BYTES),
-  mimeType: z.enum(["video/mp4", "video/quicktime", "video/webm"]),
+  mimeType: z.enum(["video/mp4", "video/webm"]),
 });
 export const caption = z.object({
   text: z.string().trim().min(1).max(80),
@@ -23,12 +23,12 @@ export const clipEdit = z.object({
   if (value.endMs - value.startMs < MIN_CLIP_MS || value.endMs - value.startMs > MAX_CLIP_MS) {
     context.addIssue({ code: "custom", message: "Clip must be between 8 and 180 seconds", path: ["endMs"] });
   }
-  let previousEnd = value.startMs;
+  let previousStart = value.startMs;
   for (const [index, item] of value.captions.entries()) {
-    if (item.startMs < value.startMs || item.endMs > value.endMs || item.startMs < previousEnd) {
-      context.addIssue({ code: "custom", message: "Captions must be ordered inside the clip", path: ["captions", index] });
+    if (item.startMs < value.startMs || item.endMs > value.endMs || item.startMs < previousStart) {
+      context.addIssue({ code: "custom", message: "Captions must be ordered by start time inside the clip", path: ["captions", index] });
     }
-    previousEnd = item.endMs;
+    previousStart = item.startMs;
   }
 });
 export type ClipEdit = z.infer<typeof clipEdit>;
@@ -40,17 +40,12 @@ export const transcriptionWord = z.object({
 export type Word = z.infer<typeof transcriptionWord>;
 
 export function normalizeWords(input: Word[], durationMs: number): Word[] {
-  const sorted = [...input].sort((a, b) => a.startMs - b.startMs);
-  let end = 0;
-  const normalized: Word[] = [];
-  for (const word of sorted) {
+  // Retain the original timing and every speaker, including speech wholly inside another word.
+  // Overlaps are surfaced for correction in the editor rather than silently deleted.
+  return [...input].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs).map((word) => {
     if (word.endMs <= word.startMs || word.endMs > durationMs + 2000) throw new Error("Invalid transcription timestamps");
-    // Diarized crosstalk may overlap. Keep the preceding word for readable, ordered captions.
-    if (word.endMs <= end) continue;
-    normalized.push({ ...word, startMs: Math.max(word.startMs, end) });
-    end = word.endMs;
-  }
-  return normalized;
+    return word;
+  });
 }
 
 export type SuggestedClip = { title: string; startMs: number; endMs: number; rationale: string; score: number };
@@ -60,13 +55,19 @@ export function discoverCandidates(words: Word[], durationMs: number, max = 8): 
   const windows: SuggestedClip[] = [];
   for (let start = 0; start < words.length; ) {
     let stop = start;
-    while (stop + 1 < words.length && words[stop].endMs - words[start].startMs < 55_000) stop++;
-    while (stop + 1 < words.length && words[stop + 1].startMs - words[start].startMs < 85_000 &&
-      words[stop + 1].startMs - words[stop].endMs < 800) stop++;
+    // Test the *next* word before consuming it: a distant word must not bridge a short passage.
+    while (stop + 1 < words.length) {
+      const next = words[stop + 1];
+      const gap = next.startMs - words[stop].endMs;
+      if (next.endMs - words[start].startMs > 85_000 || gap > 2000 ||
+        (words[stop].endMs - words[start].startMs >= 55_000 && gap >= 800)) break;
+      stop++;
+    }
     const first = words[start], last = words[stop];
     if (last.endMs - first.startMs >= MIN_CLIP_MS) {
       const startMs = Math.max(0, first.startMs - 300);
       const endMs = Math.min(durationMs, last.endMs + 500);
+      if (endMs - startMs < MIN_CLIP_MS || endMs - startMs > MAX_CLIP_MS) { start = stop + 1; continue; }
       const opening = words.slice(start, Math.min(start + 10, stop + 1)).map((w) => w.text).join(" ");
       const pause = Math.max(0, start === 0 ? 0 : first.startMs - words[start - 1].endMs);
       const score = Math.min(95, 50 + Math.min(18, Math.round(pause / 90)) + (/[?!]/.test(opening) ? 8 : 0));
@@ -93,9 +94,19 @@ export function discoverCandidates(words: Word[], durationMs: number, max = 8): 
   return [...chosen].sort((a, b) => a - b).map((index) => windows[index]);
 }
 
-export function captionsForClip(words: Word[], startMs: number, endMs: number) {
+export type Caption = z.infer<typeof caption>;
+export function captionsForClip(words: Word[], startMs: number, endMs: number): Caption[] {
   return words.filter((word) => word.startMs >= startMs && word.endMs <= endMs)
     .map(({ text, startMs, endMs }) => ({ text, startMs, endMs }));
+}
+/** Add newly exposed speech without replacing text/timing corrections inside the old cut. */
+export function captionsForExpandedCut(existing: Caption[], words: Word[], oldStart: number, oldEnd: number,
+  startMs: number, endMs: number): Caption[] {
+  const kept = existing.filter((item) => item.startMs >= startMs && item.endMs <= endMs);
+  const added = captionsForClip(words, startMs, endMs).filter((item) =>
+    (item.startMs < oldStart || item.endMs > oldEnd) &&
+    !kept.some((saved) => saved.startMs === item.startMs && saved.endMs === item.endMs));
+  return [...kept, ...added].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
 }
 export function sourceMinutes(durationMs: number): number {
   if (!Number.isSafeInteger(durationMs) || durationMs <= 0 || durationMs > MAX_DURATION_MS) throw new Error("Source duration outside supported range");
