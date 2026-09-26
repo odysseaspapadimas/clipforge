@@ -7,6 +7,7 @@ import type { ChunkManifest } from "../domain/chunks.ts";
 import { mergeTranscriptChunks, prepareAudioChunks, transcribeChunk } from "./native-transcription.ts";
 import { releaseMinutes, reserveMinutes } from "../server/credits.ts";
 import { claimStagingInferenceMinutes } from "../server/inference-budget.ts";
+import { assertMediaSlot, releaseMediaSlot, waitForMediaSlot } from "../server/media-slots.ts";
 
 export class RenderContainer extends Container { defaultPort = 8080; sleepAfter = "30s"; }
 const retrySafe = { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" } as const;
@@ -53,7 +54,8 @@ export default {
           const claim = await env.DB.prepare(`UPDATE render_job SET status = 'queued',error = NULL,updated_at = ?
             WHERE id = ? AND status = 'failed'`).bind(Date.now(), parsed.data.jobId).run();
           if (claim.meta.changes === 1) {
-            try { await instance.restart({ from: { name: "render-v1" } }); }
+            // Restart from the beginning so a released/expired Container lease is acquired anew.
+            try { await instance.restart(); }
             catch (error) {
               await env.DB.prepare("UPDATE render_job SET status = 'failed',error = 'Retry could not start',updated_at = ? WHERE id = ?")
                 .bind(Date.now(), parsed.data.jobId).run();
@@ -138,8 +140,17 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
       if (project.transcription_backend && project.transcription_backend !== this.env.TRANSCRIPTION_BACKEND) {
         throw new Error("transcription_backend_changed_during_project");
       }
-      const manifest = await step.do("prepare-chunks-v3", noRetry,
-        () => prepareAudioChunks(this.env, projectId, project.user_id, project.source_key));
+      const manifest = await (async () => {
+        const lease = await waitForMediaSlot(step, this.env.DB, `prepare-${projectId}`, "prepare");
+        try {
+          return await step.do("prepare-chunks-v4", noRetry, async () => {
+            await assertMediaSlot(this.env.DB, lease);
+            return prepareAudioChunks(this.env, projectId, project.user_id, project.source_key, lease.slot);
+          });
+        } finally {
+          await step.do("release-prepare-slot-v1", retrySafe, () => releaseMediaSlot(this.env.DB, lease));
+        }
+      })();
       const minutes = sourceMinutes(manifest.durationMs);
       await step.do("reserve-v1", retrySafe, async () => {
         const reserved = await reserveMinutes(this.env.DB, project.user_id, projectId, minutes);
@@ -192,13 +203,16 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
     if (job.status === "ready") return { jobId, status: "ready" };
     const outputKey = `users/${job.user_id}/outputs/${job.clip_id}/revision-${job.revision}.mp4`;
     try {
-      await step.do("render-v1", noRetry, async () => {
-        if (await this.env.MEDIA.head(outputKey)) return;
-        await this.env.DB.prepare("UPDATE render_job SET status = 'running',updated_at = ? WHERE id = ?")
+      const lease = await waitForMediaSlot(step, this.env.DB, `render-${jobId}`, "render");
+      try {
+        await step.do("render-v2", noRetry, async () => {
+          if (await this.env.MEDIA.head(outputKey)) return;
+          await assertMediaSlot(this.env.DB, lease);
+          await this.env.DB.prepare("UPDATE render_job SET status = 'running',updated_at = ? WHERE id = ?")
           .bind(Date.now(), jobId).run();
         const source = await this.env.MEDIA.get(job.source_key);
         if (!source) throw new Error("source_missing");
-        const container = getContainer(this.env.RENDER, `render-${jobId}`);
+        const container = getContainer(this.env.RENDER, `media-slot-${lease.slot}`);
         const config = JSON.stringify({ startMs: job.start_ms, endMs: job.end_ms, cropX: job.crop_x,
           cropY: job.crop_y, zoom: job.zoom, captions: JSON.parse(job.captions) });
         const response = await container.fetch("http://container/render", { method: "POST", headers: {
@@ -210,11 +224,14 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
           throw new Error("render_size_invalid");
         }
         const fixed = new FixedLengthStream(outputBytes);
-        await Promise.all([
-          response.body.pipeTo(fixed.writable),
-          this.env.MEDIA.put(outputKey, fixed.readable, { httpMetadata: { contentType: "video/mp4" } }),
-        ]);
-      });
+          await Promise.all([
+            response.body.pipeTo(fixed.writable),
+            this.env.MEDIA.put(outputKey, fixed.readable, { httpMetadata: { contentType: "video/mp4" } }),
+          ]);
+        });
+      } finally {
+        await step.do("release-render-slot-v1", retrySafe, () => releaseMediaSlot(this.env.DB, lease));
+      }
       await step.do("publish-v1", retrySafe, async () => {
         await this.env.DB.batch([
           this.env.DB.prepare("UPDATE render_job SET status = 'ready',error = NULL,updated_at = ? WHERE id = ?").bind(Date.now(), jobId),

@@ -64,6 +64,20 @@
       "when": 1790404503111,
       "tag": "0008_fuzzy_felicia_hardy",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1790404721740,
+      "tag": "0009_warm_ironclad",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1790404793305,
+      "tag": "0010_first_guardian",
+      "breakpoints": true
     }
   ]
 }

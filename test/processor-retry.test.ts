@@ -8,8 +8,8 @@ const { default: processor } = await import("../src/workers/processor.ts");
 function fixture(initialStatus: string, currentRevision = 1) {
   let status = initialStatus, workflowState = "errored", restarts = 0;
   const instance = { id: "export-known", status: async () => ({ status: workflowState }),
-    restart: async (options: { from: { name: string } }) => {
-      expect(options.from.name).toBe("render-v1"); restarts++; workflowState = "running";
+    restart: async (options?: unknown) => {
+      expect(options).toBeUndefined(); restarts++; workflowState = "running";
     } };
   const env = { INTERNAL_SECRET: "unit-test-secret", EXPORT: {
     create: async () => { throw new Error("Workflow ID already exists"); },

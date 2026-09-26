@@ -78,6 +78,11 @@ export const subscriptions = sqliteTable("subscription", {
 export const billingEvents = sqliteTable("billing_event", {
   id: text("id").primaryKey(), createdAt: integer("created_at").notNull(),
 });
+export const mediaSlots = sqliteTable("media_slot", {
+  slot: integer("slot").primaryKey(), holder: text("holder"),
+  generation: integer("generation").notNull().default(0),
+  leaseUntil: integer("lease_until").notNull().default(0),
+}, (table) => [uniqueIndex("media_slot_holder_unique").on(table.holder)]);
 export const inferenceSpend = sqliteTable("inference_spend", {
   projectId: text("project_id").primaryKey().references(() => projects.id),
   minutes: integer("minutes").notNull(), createdAt: integer("created_at").notNull(),

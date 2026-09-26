@@ -36,16 +36,20 @@ async function saveUpload(request: Request, path: string) {
   const bytes = await Bun.write(path, request);
   if (bytes <= 0 || bytes > MAX_BYTES) throw new Error("Invalid source size");
 }
-async function streamedFile(filePath: string, dir: string, mime: string, metadata?: { durationMs: number; width: number; height: number }) {
+async function streamedFile(filePath: string, dir: string, mime: string, release: () => void,
+  metadata?: { durationMs: number; width: number; height: number }) {
   const file = Bun.file(filePath);
   const reader = file.stream().getReader();
+  const clean = async () => { try { await rm(dir, { recursive: true, force: true }); } finally { release(); } };
   const stream = new ReadableStream<Uint8Array>({
     async pull(controller) {
-      const chunk = await reader.read();
-      if (chunk.done) { controller.close(); await rm(dir, { recursive: true, force: true }); }
-      else controller.enqueue(chunk.value);
+      try {
+        const chunk = await reader.read();
+        if (chunk.done) { controller.close(); await clean(); }
+        else controller.enqueue(chunk.value);
+      } catch (error) { controller.error(error); await clean(); }
     },
-    async cancel() { await reader.cancel(); await rm(dir, { recursive: true, force: true }); },
+    async cancel() { try { await reader.cancel(); } finally { await clean(); } },
   });
   const headers = new Headers({ "content-type": mime, "content-length": String(file.size) });
   if (metadata) {
@@ -56,19 +60,27 @@ async function streamedFile(filePath: string, dir: string, mime: string, metadat
   return new Response(stream, { headers });
 }
 
+let mediaBusy = false; // One FFmpeg/source scratch allocation per fixed Container instance.
 Bun.serve({ port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0", idleTimeout: 255,
   async fetch(request, server) {
     const path = new URL(request.url).pathname;
     if (path === "/health") return Response.json({ ok: true });
     if (request.method !== "POST" || (path !== "/probe" && path !== "/prepare" && path !== "/prepare-chunks" && path !== "/render")) return new Response("Not found", { status: 404 });
+    if (mediaBusy) return new Response("Container is processing another job", { status: 429, headers: { "retry-after": "20" } });
+    mediaBusy = true;
+    let released = false;
+    const release = () => { if (!released) { released = true; mediaBusy = false; } };
     server.timeout(request, 0);
-    const dir = await mkdtemp(join(tmpdir(), "clipforge-"));
+    let dir: string;
+    try { dir = await mkdtemp(join(tmpdir(), "clipforge-")); }
+    catch { release(); return Response.json({ error: "Scratch space unavailable" }, { status: 503 }); }
     const input = join(dir, "source.media");
     try {
       await saveUpload(request, input);
       const metadata = await inspect(input);
       if (path === "/probe") {
         await rm(dir, { recursive: true, force: true });
+        release();
         return Response.json(metadata);
       }
       if (path === "/prepare" || path === "/prepare-chunks") {
@@ -77,7 +89,7 @@ Bun.serve({ port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0", idleTim
         if (path === "/prepare") {
           const output = join(dir, "speech.mp3");
           await processCommand("ffmpeg", [...args, output], 1_200_000);
-          return streamedFile(output, dir, "audio/mpeg", metadata);
+          return await streamedFile(output, dir, "audio/mpeg", release, metadata);
         }
         await processCommand("ffmpeg", [...args, "-f", "segment", "-segment_time", String(SEGMENT_SECONDS),
           "-reset_timestamps", "1", "-segment_format", "mp3", join(dir, "speech-%03d.mp3")], 1_200_000);
@@ -93,15 +105,15 @@ Bun.serve({ port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0", idleTim
                   chunkCount: files.length, segmentMs: SEGMENT_SECONDS * 1000 }) + "\n"));
                 return;
               }
-              if (index > files.length) { controller.close(); await rm(dir, { recursive: true, force: true }); return; }
+              if (index > files.length) { controller.close(); await rm(dir, { recursive: true, force: true }); release(); return; }
               const file = Bun.file(join(dir, files[index - 1]));
               if (file.size < 100 || file.size > 1_500_000) throw new Error("Audio segment out of bounds");
               const bytes = Buffer.from(await file.arrayBuffer());
               controller.enqueue(new TextEncoder().encode(JSON.stringify({ type: "chunk", index: index - 1,
                 audio: bytes.toString("base64") }) + "\n"));
-            } catch (error) { controller.error(error); await rm(dir, { recursive: true, force: true }); }
+            } catch (error) { controller.error(error); try { await rm(dir, { recursive: true, force: true }); } finally { release(); } }
           },
-          async cancel() { await rm(dir, { recursive: true, force: true }); },
+          async cancel() { try { await rm(dir, { recursive: true, force: true }); } finally { release(); } },
         });
         return new Response(stream, { headers: { "content-type": "application/x-ndjson" } });
       }
@@ -120,9 +132,9 @@ Bun.serve({ port: Number(process.env.PORT ?? 8080), hostname: "0.0.0.0", idleTim
         "-ss", String(preSeek), "-i", input, "-ss", String(trim), "-t", String(duration),
         "-vf", filter, "-c:v", "libx264", "-preset", "veryfast", "-crf", "22",
         "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", output], 1_200_000);
-      return streamedFile(output, dir, "video/mp4");
+      return await streamedFile(output, dir, "video/mp4", release);
     } catch (error) {
-      await rm(dir, { recursive: true, force: true });
+      try { await rm(dir, { recursive: true, force: true }); } finally { release(); }
       console.error("media operation failed", { operation: path, error: String(error) });
       return Response.json({ error: "Media processing failed" }, { status: 422 });
     }

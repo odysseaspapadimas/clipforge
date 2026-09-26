@@ -11,13 +11,14 @@ export const transcriptSegmentKey = (userId: string, projectId: string, index: n
   `users/${userId}/transcripts/${projectId}/chunk-${String(index).padStart(3, "0")}.json`;
 
 /** FFmpeg is the sole source of segment metadata. Store each chunk before publishing the manifest. */
-export async function prepareAudioChunks(env: ProcessorEnv, projectId: string, userId: string, sourceKey: string): Promise<ChunkManifest> {
+export async function prepareAudioChunks(env: ProcessorEnv, projectId: string, userId: string, sourceKey: string,
+  slot: number): Promise<ChunkManifest> {
   const manifestKey = `${audioPrefix(userId, projectId)}/manifest.json`;
   const cached = await env.MEDIA.get(manifestKey);
   if (cached) return chunkManifest.parse(await cached.json());
   const source = await env.MEDIA.get(sourceKey);
   if (!source) throw new Error("source_missing");
-  const container = getContainer(env.RENDER, `prepare-${projectId}`);
+  const container = getContainer(env.RENDER, `media-slot-${slot}`);
   const response = await container.fetch("http://container/prepare-chunks", {
     method: "POST", body: source.body, headers: { "content-type": "application/octet-stream" },
   });
