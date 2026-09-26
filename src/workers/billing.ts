@@ -16,8 +16,10 @@ const idOf = (ref: string | { id: string } | null | undefined) =>
 export default class Billing extends Cloudflare.Worker<Billing>()(
   "ClipforgeBilling", { main: import.meta.url, workersDev: true,
     observability: { enabled: true, logs: { enabled: true, invocationLogs: true } }, env: {
-    INTERNAL_SECRET: Config.Redacted("CLIPFORGE_INTERNAL_SECRET"),
-    APP_ORIGIN: Config.String("CLIPFORGE_APP_ORIGIN"),
+    // Effect-native Workers re-read Config during isolate initialization. Bind
+    // under the Config source keys, not aliases, so runtime resolution succeeds.
+    CLIPFORGE_INTERNAL_SECRET: Config.Redacted("CLIPFORGE_INTERNAL_SECRET"),
+    CLIPFORGE_APP_ORIGIN: Config.String("CLIPFORGE_APP_ORIGIN"),
   } },
   Effect.gen(function* () {
     const product = yield* Stripe.Product("ClipforgePro", { name: "Clipforge Pro", description: "120 source minutes per billing month" });
@@ -83,8 +85,8 @@ export default class Billing extends Cloudflare.Worker<Billing>()(
       const request = yield* HttpServerRequest;
       // Resolve only at request time: Alchemy imports this module in Bun during plan.
       const runtime = yield* Effect.promise(() => import("cloudflare:workers"));
-      const internalEnv = runtime.env as unknown as { INTERNAL_SECRET?: string; APP_ORIGIN?: string };
-      if (!internalEnv.INTERNAL_SECRET || request.headers["x-clipforge-internal"] !== internalEnv.INTERNAL_SECRET) {
+      const internalEnv = runtime.env as unknown as { CLIPFORGE_INTERNAL_SECRET?: string; CLIPFORGE_APP_ORIGIN?: string };
+      if (!internalEnv.CLIPFORGE_INTERNAL_SECRET || request.headers["x-clipforge-internal"] !== internalEnv.CLIPFORGE_INTERNAL_SECRET) {
         return HttpServerResponse.text("Not found", { status: 404 });
       }
       if (request.method !== "POST") return HttpServerResponse.text("Method not allowed", { status: 405 });
@@ -97,7 +99,7 @@ export default class Billing extends Cloudflare.Worker<Billing>()(
       const user = yield* Effect.promise(() => raw.prepare("SELECT id,email FROM user WHERE id = ?").bind(body.userId).first<{ id: string; email: string }>());
       if (!user || user.email !== body.email) return HttpServerResponse.text("Not found", { status: 404 });
       const path = new URL(request.url, "https://internal").pathname;
-      const origin = internalEnv.APP_ORIGIN;
+      const origin = internalEnv.CLIPFORGE_APP_ORIGIN;
       if (!origin || !origin.startsWith("https://")) return HttpServerResponse.text("Billing origin unavailable", { status: 503 });
       type BillingRecord = { customer_id: string; status: string; period_end: number | null;
         checkout_url: string | null; checkout_created_at: number | null };

@@ -1,25 +1,7 @@
-# Read-only Cloudflare Email Sending inventory — 2026-09-26
+# Dedicated Clipforge staging email sender — 2026-09-26
 
-No DNS records, sender configuration, cloud resources, Stripe catalog, or paid inference were created or changed. An Alchemy local-state plan with **no resources** used the existing OAuth staging profile for account-matched Cloudflare **GET** requests only. The ignored transcript is `.local-dev/zone-inventory.log` (mode 0600); credentials were never copied into this repository.
+The owner explicitly approved onboarding **`staging.clipforge.odysseas.tech`** and its Cloudflare Email Sending DNS records. A guarded, identity-checked onboarding operation added only this subdomain to the already-owned `odysseas.tech` zone. Read-only follow-up verified the sender was enabled and its `cf-bounce.staging.clipforge.odysseas.tech` MX records (three) and SPF TXT, `cf-bounce._domainkey.staging.clipforge.odysseas.tech` DKIM TXT, and `_dmarc.staging.clipforge.odysseas.tech` TXT. The Clipforge Worker's `send_email` binding restricts senders to `hello@staging.clipforge.odysseas.tech`. The existing `brainrotai.app` outbound domain was neither used nor modified; no apex MX or inbound routes were changed.
 
-| Owned zone | Zone status | Existing outbound Email Sending domains |
-| --- | --- | --- |
-| `brainrotai.app` | active | `brainrotai.app` apex enabled; **unrelated product—do not use or modify** |
-| `odysseas.tech` | active | none |
+The staging Worker successfully requested verification/password-reset sends to **the allowlisted owner mailbox**, but no independent mailbox-receipt check was performed. An accepted send call is not deliverability proof; confirm inbox delivery, domain reputation and sending quota before opening access. Public staging account creation remains restricted to that one owner mailbox. `workers.dev` hosts only the web app and is not an email sending domain.
 
-**Proposed sender (requires explicit user approval):** onboard `staging.clipforge.odysseas.tech` as an independent Cloudflare Email Sending subdomain and send from `hello@staging.clipforge.odysseas.tech`. Alternative: `mail.clipforge.odysseas.tech`. This is still a change inside the existing `odysseas.tech` production-owned zone; neither name has been reserved or onboarded. Exact-name DNS GETs returned **no records** at either candidate, its `cf-bounce`, `cf-bounce._domainkey`, or `_dmarc` name. Wildcard GETs for `*.odysseas.tech` and `*.clipforge.odysseas.tech` and the `_dmarc.odysseas.tech` name also returned no records. These are point-in-time API reads, not a guarantee that a future Cloudflare onboarding plan will be conflict-free.
-
-## Changes requiring approval before onboarding
-
-In **Compute → Email Service → Email Sending → Onboard Domain**, Cloudflare treats a subdomain as a separate sending domain. For the recommended name, onboarding would create/manage:
-
-- MX at `cf-bounce.staging.clipforge.odysseas.tech` pointing to Cloudflare's three bounce mail exchangers (Cloudflare assigns priorities).
-- SPF TXT at `cf-bounce.staging.clipforge.odysseas.tech` (documented example `v=spf1 include:_spf.mx.cloudflare.net ~all`).
-- DKIM TXT at `cf-bounce._domainkey.staging.clipforge.odysseas.tech` (Cloudflare supplies the public key).
-- DMARC TXT at `_dmarc.staging.clipforge.odysseas.tech`; review the exact policy in the dashboard (Cloudflare documents `p=none` as a monitoring starting point).
-
-No root-domain inbound MX/routing change is requested. Outbound sending-domain DNS records remain managed/locked during that domain configuration. Verify their configured status in **Email Sending → Settings** before any real signup email. Cloudflare's [`allowed_sender_addresses`](https://developers.cloudflare.com/email-service/configuration/send-bindings/) can restrict Clipforge's Worker binding to its single approved sender; our stack does so. Cloudflare Email Sending requires Workers Paid to send to arbitrary customers; [pricing](https://developers.cloudflare.com/email-service/platform/pricing/) currently lists 3,000 outbound emails/account/month included, then $0.35 per 1,000. [Limits](https://developers.cloudflare.com/email-service/platform/limits/) say before sending-domain onboarding only verified destination addresses can receive mail; after onboarding, any recipient can, subject to account-level daily limits. Paid-plan status, sending quota and deliverability for this account remain **unverified**.
-
-`https://clipforge-staging-web.<account-subdomain>.workers.dev` is for the web app only. `workers.dev` is not an onboardable customer-owned sender zone. Keep staging undeployed until the exact sender/DNS change is approved, onboarding is verified, and the changed stack receives a fresh account-checked Alchemy plan with TEST Stripe and persistent secrets.
-
-Sources: [domain onboarding/DNS](https://developers.cloudflare.com/email-service/configuration/domains/), [subdomain onboarding](https://developers.cloudflare.com/email-service/configuration/subdomains/), [Workers send API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/), [pricing](https://developers.cloudflare.com/email-service/platform/pricing/), [limits](https://developers.cloudflare.com/email-service/platform/limits/).
+Evidence: ignored, mode-0600 `.local-dev/` onboarding/inventory logs, account preflight and reviewed Alchemy plan logs. Never commit credentials or dump email tokens into public logs. Sources: [Cloudflare domain onboarding](https://developers.cloudflare.com/email-service/configuration/domains/), [subdomains](https://developers.cloudflare.com/email-service/configuration/subdomains/), [Workers sending API](https://developers.cloudflare.com/email-service/api/send-emails/workers-api/), [limits](https://developers.cloudflare.com/email-service/platform/limits/).

@@ -11,6 +11,7 @@ import { claimStagingInferenceMinutes } from "../server/inference-budget.ts";
 import { assertMediaSlot, releaseMediaSlot, waitForMediaSlot } from "../server/media-slots.ts";
 import { MEDIA_RETENTION_MS, purgeProject } from "../server/project-retention.ts";
 import { claimExportStart, claimIngestStart } from "../server/job-fences.ts";
+import { storeRenderedMp4 } from "./render-output.ts";
 
 export class RenderContainer extends Container { defaultPort = 8080; sleepAfter = "30s"; }
 const retrySafe = { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" } as const;
@@ -434,15 +435,7 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
           "content-type": "application/octet-stream", "x-clipforge-render": config,
         }, body: source.body });
         if (!response.ok || !response.body) throw new Error(`render_http_${response.status}`);
-        const outputBytes = Number(response.headers.get("content-length"));
-        if (!Number.isSafeInteger(outputBytes) || outputBytes <= 0 || outputBytes > 512 * 1024 * 1024) {
-          throw new Error("render_size_invalid");
-        }
-        const fixed = new FixedLengthStream(outputBytes);
-          await Promise.all([
-            response.body.pipeTo(fixed.writable),
-            this.env.MEDIA.put(outputKey, fixed.readable, { httpMetadata: { contentType: "video/mp4" } }),
-          ]);
+        await storeRenderedMp4(this.env.MEDIA, outputKey, response.body, response.headers.get("content-length"));
         });
       } finally {
         await step.do("release-render-slot-v1", retrySafe, () => releaseMediaSlot(this.env.DB, lease));
