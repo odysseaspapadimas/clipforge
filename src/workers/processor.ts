@@ -43,11 +43,45 @@ export async function sweepExpiredProjects(env: Pick<ProcessorEnv, "DB" | "MEDIA
   return removed;
 }
 
+export async function reconcileFailedIngests(env: Pick<ProcessorEnv, "DB" | "INGEST">, now = Date.now()): Promise<number> {
+  const result = await env.DB.prepare(`SELECT id,user_id FROM project
+    WHERE status = 'processing' AND updated_at < ? ORDER BY updated_at LIMIT 2`)
+    .bind(now - 24 * 60 * 60 * 1000).all<{ id: string; user_id: string }>();
+  let failed = 0;
+  for (const project of result.results) {
+    try {
+      const workflow = await env.INGEST.get(`ingest-${project.id}`);
+      const state = await workflow.status();
+      if (state.status !== "errored" && state.status !== "terminated") continue;
+      // Refund first: a crash before the status update will retry an idempotent
+      // release next hour. Do not refund a running, waiting or unknown Workflow.
+      await releaseMinutes(env.DB, project.user_id, project.id);
+      const updated = await env.DB.prepare(`UPDATE project SET status = 'failed',
+        error = 'Processing stopped. Your source minutes were returned.', updated_at = ?
+        WHERE id = ? AND user_id = ? AND status = 'processing'`)
+        .bind(now, project.id, project.user_id).run();
+      failed += updated.meta.changes;
+    } catch (error) {
+      console.error("ingest reconciliation failed", { projectId: project.id, code: safeErrorCode(error) });
+    }
+  }
+  return failed;
+}
+
 export default {
   async scheduled(_event: ScheduledEvent, env: ProcessorEnv, ctx: ExecutionContext): Promise<void> {
-    ctx.waitUntil(sweepExpiredProjects(env).then((removed) => {
-      console.info("retention sweep completed", { removed });
-    }));
+    ctx.waitUntil(Promise.allSettled([sweepExpiredProjects(env), reconcileFailedIngests(env)])
+      .then(([retention, ingest]) => {
+        for (const [name, result] of [["retention", retention], ["ingest", ingest]] as const) {
+          if (result.status === "rejected") console.error("scheduled maintenance failed", {
+            task: name, code: safeErrorCode(result.reason),
+          });
+        }
+        console.info("scheduled maintenance completed", {
+          removed: retention.status === "fulfilled" ? retention.value : null,
+          reconciled: ingest.status === "fulfilled" ? ingest.value : null,
+        });
+      }));
   },
   async fetch(request: Request, env: ProcessorEnv): Promise<Response> {
     if (!internal(request, env)) return new Response("Not found", { status: 404 });
