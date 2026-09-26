@@ -6,6 +6,7 @@ import { captionsForClip, discoverCandidates, sourceMinutes, type Word } from ".
 import type { ChunkManifest } from "../domain/chunks.ts";
 import { mergeTranscriptChunks, prepareAudioChunks, transcribeChunk } from "./native-transcription.ts";
 import { releaseMinutes, reserveMinutes } from "../server/credits.ts";
+import { claimStagingInferenceMinutes } from "../server/inference-budget.ts";
 
 export class RenderContainer extends Container { defaultPort = 8080; sleepAfter = "30s"; }
 const retrySafe = { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" } as const;
@@ -148,6 +149,11 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
           .bind(manifest.durationMs, manifest.width, manifest.height, manifest.chunkCount,
             this.env.TRANSCRIPTION_BACKEND, Date.now(), projectId).run();
       });
+      await step.do("claim-staging-inference-v1", retrySafe, async () => {
+        if (!await claimStagingInferenceMinutes(this.env.DB, projectId, minutes)) {
+          throw new Error("staging_inference_budget_exhausted");
+        }
+      });
       for (let index = 0; index < manifest.chunkCount; index++) {
         await step.do(`transcribe-v3-${index}`, noRetry, async () => {
           await transcribeChunk(this.env, projectId, project.user_id, index);
@@ -167,7 +173,9 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
       console.error("ingest failed", { projectId, stage: String(error) });
       await releaseMinutes(this.env.DB, project.user_id, projectId);
       await this.env.DB.prepare("UPDATE project SET status = 'failed',error = ?,updated_at = ? WHERE id = ?")
-        .bind("Processing failed. Your source minutes were returned; contact support or try another upload.", Date.now(), projectId).run();
+        .bind(String(error).includes("staging_inference_budget_exhausted")
+          ? "Staging's shared transcription allowance is exhausted or this source exceeds 10 minutes. Your source minutes were returned."
+          : "Processing failed. Your source minutes were returned; contact support or try another upload.", Date.now(), projectId).run();
       throw error;
     }
   }

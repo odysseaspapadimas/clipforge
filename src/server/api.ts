@@ -4,6 +4,7 @@ import { z } from "zod";
 import { clipEdit, uploadInput } from "../domain/media.ts";
 import { requireUser } from "./auth.ts";
 import { balance } from "./credits.ts";
+import { STAGING_TOTAL_INFERENCE_MINUTES } from "./inference-budget.ts";
 import { env } from "./env.ts";
 import { clips, projects, subscriptions } from "./schema.ts";
 
@@ -87,8 +88,12 @@ export async function handleApi(request: Request): Promise<Response> {
   try {
     if (request.method === "GET" && path[0] === "me" && path.length === 1) {
       const subscription = (await db().select().from(subscriptions).where(eq(subscriptions.userId, user.id)).limit(1))[0] ?? null;
+      const staging = String((env as typeof env & { STAGING_MODE?: string }).STAGING_MODE) === "true";
+      const use = staging ? await env.DB.prepare("SELECT COALESCE(SUM(minutes),0) AS amount FROM inference_spend")
+        .first<{ amount: number }>() : null;
       return json({ user, subscription: subscription ? { status: subscription.status, periodEnd: subscription.periodEnd } : null,
-        minutes: await balance(env.DB, user.id), localDemo: String(env.DEV_MODE) === "true" });
+        minutes: await balance(env.DB, user.id), localDemo: String(env.DEV_MODE) === "true",
+        stagingMinutesRemaining: staging ? Math.max(0, STAGING_TOTAL_INFERENCE_MINUTES - (use?.amount ?? 0)) : null });
     }
     if (request.method === "POST" && path[0] === "billing" && (path[1] === "checkout" || path[1] === "portal") && path.length === 2) {
       return json(await billing(path[1], user));

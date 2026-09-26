@@ -5,7 +5,8 @@ import { useEffect, useState, type ChangeEvent } from "react";
 
 export const Route = createFileRoute("/studio/")({ component: Studio });
 type Project = { id: string; title: string; fileSize: number; status: string; durationMs: number | null; error: string | null; createdAt: number };
-type Account = { user: { name: string; email: string }; minutes: number; localDemo: boolean; subscription: { status: string; periodEnd: number | null } | null };
+type Account = { user: { name: string; email: string }; minutes: number; localDemo: boolean;
+  stagingMinutesRemaining: number | null; subscription: { status: string; periodEnd: number | null } | null };
 async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api/${path}`, { credentials: "same-origin", ...options });
   const data = await response.json() as T & { error?: string };
@@ -83,6 +84,8 @@ function Studio() {
   }
   return <div className="content-container studio-page">
     {account?.localDemo && <div className="notice demo" role="status">LOCAL SANDBOX — payment and transcript discovery use offline fixtures here. Real Stripe and speech providers have not been contacted.</div>}
+    {account?.stagingMinutesRemaining !== null && account?.stagingMinutesRemaining !== undefined &&
+      <div className="notice demo" role="status">GUARDED STAGING — {account.stagingMinutesRemaining} shared inference minutes remain across this staging environment. Sources exceeding the remaining allowance fail without model inference; reserved plan minutes are returned. Upload only consented short test recordings.</div>}
     <div className="studio-top"><div><span className="eyebrow">YOUR CREATIVE WORKSPACE</span><h1>{greeting()}, <em>{account?.user.name?.split(" ")[0] ?? "creator"}.</em></h1><p>Your conversations have more to give. Let's find the moments that matter.</p></div>
       <button className="button button-outline" onClick={async () => { await createAuthClient().signOut(); window.location.assign("/"); }}><LogOut size={17} /> Sign out</button></div>
     {error && <div className="notice error" role="alert">{error}</div>}

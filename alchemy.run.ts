@@ -44,7 +44,7 @@ export const Website = Cloudflare.Website.Vite("ClipforgeWebsite", {
       : { EMAIL_API_KEY: Config.Redacted("CLIPFORGE_EMAIL_API_KEY") }),
     EMAIL_FROM: Config.String("CLIPFORGE_EMAIL_FROM"),
     APP_ORIGIN: Config.String("CLIPFORGE_APP_ORIGIN"),
-    DEV_MODE: "false",
+    DEV_MODE: "false", STAGING_MODE: "true",
     PROCESSOR: Processor, BILLING: Billing,
   },
   observability: { enabled: true, logs: { enabled: true, invocationLogs: true } },
