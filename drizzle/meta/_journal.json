@@ -78,6 +78,13 @@
       "when": 1790404793305,
       "tag": "0010_first_guardian",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1790408406415,
+      "tag": "0011_tan_scalphunter",
+      "breakpoints": true
     }
   ]
 }

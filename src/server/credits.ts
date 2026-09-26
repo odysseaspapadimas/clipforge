@@ -41,16 +41,16 @@ export async function releaseMinutes(db: D1Database, userId: string, projectId: 
 }
 /** Only the currently pending checkout can install a subscription ID; older replays cannot clear a cancellation. */
 export async function applyCheckoutCompletion(db: D1Database, input: {
-  customerId: string; subscriptionId: string; createdSeconds: number;
+  customerId: string; subscriptionId: string; sessionId: string; createdSeconds: number;
 }): Promise<void> {
-  const { customerId, subscriptionId, createdSeconds } = input;
+  const { customerId, subscriptionId, sessionId, createdSeconds } = input;
   if (!customerId.startsWith("cus_") || !subscriptionId.startsWith("sub_") ||
-    !Number.isSafeInteger(createdSeconds) || createdSeconds <= 0) return;
+    !sessionId.startsWith("cs_test_") || !Number.isSafeInteger(createdSeconds) || createdSeconds <= 0) return;
   // Stripe timestamps have second precision; allow rounding of the creation second.
   await db.prepare(`UPDATE subscription SET subscription_id = ?,status = 'none'
-    WHERE customer_id = ? AND status = 'checkout_pending' AND checkout_created_at IS NOT NULL
-    AND checkout_created_at <= ?`)
-    .bind(subscriptionId, customerId, createdSeconds * 1000 + 999).run();
+    WHERE customer_id = ? AND status = 'checkout_pending' AND checkout_session_id = ?
+    AND checkout_created_at IS NOT NULL AND checkout_created_at <= ?`)
+    .bind(subscriptionId, customerId, sessionId, createdSeconds * 1000 + 999).run();
 }
 
 /** Stripe webhook delivery is unordered: deletion is terminal for the same subscription ID. */

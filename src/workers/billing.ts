@@ -61,7 +61,7 @@ export default class Billing extends Cloudflare.Worker<Billing>()(
         if (!customerId) return;
         const subscriptionId = idOf(object.subscription);
         if (subscriptionId) yield* Effect.promise(() => applyCheckoutCompletion(raw, {
-          customerId, subscriptionId, createdSeconds: object.created,
+          customerId, subscriptionId, sessionId: object.id, createdSeconds: object.created,
         }));
       } else if (event.type === "customer.subscription.created" ||
         event.type === "customer.subscription.updated" || event.type === "customer.subscription.deleted") {
@@ -131,16 +131,17 @@ export default class Billing extends Cloudflare.Worker<Billing>()(
             HttpServerResponse.text("Checkout is being prepared; contact support if it does not appear", { status: 409 });
         }
         const claimed = yield* Effect.promise(() => raw.prepare(`UPDATE subscription SET status='checkout_pending',
-          checkout_created_at=?,checkout_url=NULL WHERE user_id=? AND
+          checkout_created_at=?,checkout_url=NULL,checkout_session_id=NULL WHERE user_id=? AND
           (status!='checkout_pending' OR (status='checkout_pending' AND checkout_created_at < ?))`)
           .bind(Date.now(), user.id, Date.now() - 25 * 60 * 60 * 1000).run());
         if (claimed.meta.changes !== 1) return HttpServerResponse.text("Checkout is already in progress", { status: 409 });
         const session = yield* checkout({ mode: "subscription", customer: record.customer_id,
           line_items: [{ price: yield* priceId, quantity: 1 }],
           success_url: `${origin}/studio?checkout=complete`, cancel_url: `${origin}/pricing` });
-        if (!session.url) return HttpServerResponse.text("Checkout unavailable", { status: 503 });
-        yield* Effect.promise(() => raw.prepare("UPDATE subscription SET checkout_url = ? WHERE user_id = ? AND status = 'checkout_pending'")
-          .bind(session.url, user.id).run());
+        if (!session.url || !session.id?.startsWith("cs_test_")) return HttpServerResponse.text("Checkout unavailable", { status: 503 });
+        yield* Effect.promise(() => raw.prepare(`UPDATE subscription SET checkout_url = ?,checkout_session_id = ?
+          WHERE user_id = ? AND status = 'checkout_pending'`)
+          .bind(session.url, session.id, user.id).run());
         return yield* HttpServerResponse.json({ url: session.url });
       }
       if (path === "/internal/portal") {

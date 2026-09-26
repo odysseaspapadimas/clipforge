@@ -6,7 +6,8 @@ import { applyCheckoutCompletion, applySubscriptionSnapshot, balance, claimCusto
 function fixture() {
   const sqlite = new Database(":memory:");
   sqlite.exec(`CREATE TABLE subscription (user_id TEXT PRIMARY KEY, customer_id TEXT, subscription_id TEXT, status TEXT,
-    period_start INTEGER, period_end INTEGER, current_invoice TEXT, checkout_created_at INTEGER, last_event_created INTEGER);
+    period_start INTEGER, period_end INTEGER, current_invoice TEXT, checkout_created_at INTEGER,
+    checkout_session_id TEXT, last_event_created INTEGER);
     CREATE TABLE minute_ledger (key TEXT PRIMARY KEY,user_id TEXT,period_key TEXT,delta INTEGER,kind TEXT,project_id TEXT,created_at INTEGER);
     INSERT INTO subscription(user_id,customer_id,subscription_id,status) VALUES ('alice','cus_alice',NULL,'none'),('bob','cus_bob',NULL,'none');`);
   const makeStatement = (sql: string, params: unknown[] = []): any => ({
@@ -83,17 +84,19 @@ describe("source minute ledger", () => {
   test("old Checkout completion cannot reset a canceled subscription or replace a new pending checkout", async () => {
     const { db, sqlite } = fixture();
     const oldCreated = Math.floor(Date.now() / 1000) - 30;
-    sqlite.prepare("UPDATE subscription SET subscription_id='sub_old',status='canceled',checkout_created_at=? WHERE user_id='alice'")
+    sqlite.prepare("UPDATE subscription SET subscription_id='sub_old',status='canceled',checkout_created_at=?,checkout_session_id='cs_test_old' WHERE user_id='alice'")
       .run(oldCreated * 1000);
-    await applyCheckoutCompletion(db, { customerId: "cus_alice", subscriptionId: "sub_old", createdSeconds: oldCreated });
+    await applyCheckoutCompletion(db, { customerId: "cus_alice", subscriptionId: "sub_old", sessionId: "cs_test_old", createdSeconds: oldCreated });
     expect(sqlite.prepare("SELECT status FROM subscription WHERE user_id='alice'").get()).toEqual({ status: "canceled" });
     const nextCreated = oldCreated + 20;
-    sqlite.prepare("UPDATE subscription SET status='checkout_pending',checkout_created_at=? WHERE user_id='alice'")
+    sqlite.prepare("UPDATE subscription SET status='checkout_pending',checkout_created_at=?,checkout_session_id='cs_test_new' WHERE user_id='alice'")
       .run(nextCreated * 1000);
-    await applyCheckoutCompletion(db, { customerId: "cus_alice", subscriptionId: "sub_old", createdSeconds: oldCreated });
+    await applyCheckoutCompletion(db, { customerId: "cus_alice", subscriptionId: "sub_old", sessionId: "cs_test_old", createdSeconds: oldCreated });
     expect(sqlite.prepare("SELECT subscription_id,status FROM subscription WHERE user_id='alice'").get())
       .toEqual({ subscription_id: "sub_old", status: "checkout_pending" });
-    await applyCheckoutCompletion(db, { customerId: "cus_alice", subscriptionId: "sub_new", createdSeconds: nextCreated });
+    await applyCheckoutCompletion(db, { customerId: "cus_alice", subscriptionId: "sub_old", sessionId: "cs_test_old", createdSeconds: nextCreated });
+    expect(sqlite.prepare("SELECT status FROM subscription WHERE user_id='alice'").get()).toEqual({ status: "checkout_pending" });
+    await applyCheckoutCompletion(db, { customerId: "cus_alice", subscriptionId: "sub_new", sessionId: "cs_test_new", createdSeconds: nextCreated });
     expect(sqlite.prepare("SELECT subscription_id,status FROM subscription WHERE user_id='alice'").get())
       .toEqual({ subscription_id: "sub_new", status: "none" });
     sqlite.close();

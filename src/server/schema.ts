@@ -73,6 +73,7 @@ export const subscriptions = sqliteTable("subscription", {
   subscriptionId: text("subscription_id").unique(), status: text("status").notNull(),
   periodStart: integer("period_start"), periodEnd: integer("period_end"), currentInvoice: text("current_invoice"),
   checkoutUrl: text("checkout_url"), checkoutCreatedAt: integer("checkout_created_at"),
+  checkoutSessionId: text("checkout_session_id"),
   lastEventCreated: integer("last_event_created").notNull().default(0),
 });
 export const billingEvents = sqliteTable("billing_event", {
