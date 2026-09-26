@@ -9,6 +9,7 @@ import { mergeTranscriptChunks, prepareAudioChunks, transcribeChunk } from "./na
 import { releaseMinutes, reserveMinutes } from "../server/credits.ts";
 import { claimStagingInferenceMinutes } from "../server/inference-budget.ts";
 import { assertMediaSlot, releaseMediaSlot, waitForMediaSlot } from "../server/media-slots.ts";
+import { MEDIA_RETENTION_MS, purgeProject } from "../server/project-retention.ts";
 
 export class RenderContainer extends Container { defaultPort = 8080; sleepAfter = "30s"; }
 const retrySafe = { retries: { limit: 2, delay: "5 seconds", backoff: "exponential" }, timeout: "5 minutes" } as const;
@@ -20,7 +21,32 @@ function internal(request: Request, env: ProcessorEnv): boolean {
 }
 const sjson = (value: unknown, status = 200) => Response.json(value, { status });
 
+/** Process a small bounded batch each hour, including accounts that never sign in again. */
+export async function sweepExpiredProjects(env: Pick<ProcessorEnv, "DB" | "MEDIA">, now = Date.now()): Promise<number> {
+  const result = await env.DB.prepare(`SELECT id,user_id FROM project
+    WHERE created_at < ? AND status IN ('uploading','ready','failed','deleting')
+    ORDER BY updated_at LIMIT 2`)
+    .bind(now - MEDIA_RETENTION_MS - 24 * 60 * 60 * 1000).all<{ id: string; user_id: string }>();
+  let removed = 0;
+  for (const project of result.results) {
+    try {
+      if (await purgeProject(env.DB, env.MEDIA, project.user_id, project.id) === "deleted") removed++;
+    } catch (error) {
+      // Move a problematic project behind other eligible projects; next hour retries it.
+      await env.DB.prepare("UPDATE project SET updated_at = ? WHERE id = ? AND user_id = ?")
+        .bind(now, project.id, project.user_id).run();
+      console.error("retention sweep failed", { projectId: project.id, code: safeErrorCode(error) });
+    }
+  }
+  return removed;
+}
+
 export default {
+  async scheduled(_event: ScheduledEvent, env: ProcessorEnv, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(sweepExpiredProjects(env).then((removed) => {
+      console.info("retention sweep completed", { removed });
+    }));
+  },
   async fetch(request: Request, env: ProcessorEnv): Promise<Response> {
     if (!internal(request, env)) return new Response("Not found", { status: 404 });
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });

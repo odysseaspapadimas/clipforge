@@ -18,7 +18,7 @@ if (transcriptionBackend !== "workers-ai" && transcriptionBackend !== "deepgram"
 const emailSender = process.env.CLIPFORGE_EMAIL_FROM?.match(/<([^<>]+)>/)?.[1] ?? process.env.CLIPFORGE_EMAIL_FROM;
 
 export const Processor = Cloudflare.Worker("ClipforgeProcessor", {
-  main: "./src/workers/processor.ts", workersDev: false,
+  main: "./src/workers/processor.ts", workersDev: false, crons: ["0 * * * *"],
   observability: { enabled: true, logs: { enabled: true, invocationLogs: true } },
   env: {
     DB: Database, MEDIA: Media,
