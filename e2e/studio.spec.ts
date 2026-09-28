@@ -78,6 +78,11 @@ test("verified customer can upload, edit, export and download; other accounts ca
   const captionText = page.getByLabel("Caption 1 text");
   await expect(captionText).toBeVisible();
   await captionText.fill("Corrected");
+  await page.getByRole("button", { name: "bold", exact: true }).click();
+  await page.getByLabel("Caption color").fill("#12a4f0");
+  await page.getByLabel("Caption size").fill("105");
+  await page.getByLabel("Caption placement").selectOption("low");
+  await expect(page.locator(".preview-overlay")).toHaveCSS("color", "rgb(18, 164, 240)");
   const firstStart = page.getByLabel("Caption 1 start");
   await firstStart.fill("0.1");
   await page.getByLabel("New caption word").fill("Inserted");
@@ -91,6 +96,11 @@ test("verified customer can upload, edit, export and download; other accounts ca
   await expect(firstStart).toHaveValue("0.1");
   const savedCaptions = await (await page.request.get(`/api/projects/${projectId}`)).json();
   expect(savedCaptions.clips[0].captions[1].text).toBe("Inserted");
+  expect(savedCaptions.clips[0].captionStyle).toEqual({ preset: "bold", color: "#12a4f0", size: 105, position: "low" });
+  await page.reload();
+  await page.getByRole("button", { name: "Captions", exact: true }).click();
+  await expect(page.getByLabel("Caption color")).toHaveValue("#12a4f0");
+  await expect(page.getByLabel("Caption size")).toHaveValue("105");
   expect(savedCaptions.clips[0].captions.some((item: { text: string; startMs: number }) =>
     item.text === removedText && item.startMs === removedStart)).toBe(false);
   await page.getByRole("button", { name: "Cut", exact: true }).click();
