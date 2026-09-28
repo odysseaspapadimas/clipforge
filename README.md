@@ -13,7 +13,7 @@ TanStack Start/React + Better Auth on Workers; D1 for auth, projects, transcript
 
 ## Verification status
 
-Worktrees can share local-only configuration without copying secrets or private artifacts; see [local worktree environment setup](docs/worktree-env.md). Staging/deploy credentials are never loaded by the local `.envrc`.
+Worktrees can share local-only configuration without copying secrets or private artifacts; see [local worktree environment setup](docs/worktree-env.md). Staging/deploy credentials are never loaded by the local `.envrc`. To coordinate several independent Pi sessions with different outcomes (PR, read-only investigation, long-term ownership), use the [Clipforge orchestration skill](.agents/skills/clipforge-orchestrate/SKILL.md) from the Clipforge Herdr workspace. Its read-only `bun scripts/session-preflight.ts <pr|investigation|persistent> <checkout-path>` validates the checkout and approved local env before `pi_sessions.create`; it does not launch agents or contact cloud services.
 
 For every candidate commit, run `bun scripts/verify.ts local` and inspect its SHA-pinned, ignored `.local-dev/verification/` report. The reproducible checklist and coverage gaps are in [the verification skill](.agents/skills/clipforge-verify/SKILL.md) and [feature map](.agents/skills/clipforge-verify/references/feature-map.md). The read-only `bun scripts/inspect.ts` snapshot (or Pi `/inspect` in this project) shows worktrees, PR CI, exact-SHA local evidence, and Herdr agent states; it does not mark untested staging paths ready. See `AGENTS.md` for autonomous PR boundaries.
 
