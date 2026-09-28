@@ -57,10 +57,30 @@ test("verified customer can upload, edit, export and download; other accounts ca
   await page.locator('input[type="file"]').setInputFiles({ name: "unpreviewable.mov", mimeType: "video/quicktime", buffer: Buffer.from("not a browser video") });
   await expect(page.getByRole("alert")).toContainText("Convert to H.264/AAC MP4");
   await expect(page.locator(".library-count")).toContainText("0 PROJECTS");
+  await page.route(/\/api\/uploads\/[^/]+\/parts\/1$/, route => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "Connection interrupted" }) }));
   await page.locator('input[type="file"]').setInputFiles(fixture);
+  await expect(page.getByRole("alert")).toContainText("Connection interrupted", { timeout: 20_000 });
+  await expect(page.getByRole("button", { name: /Retry upload/ })).toBeVisible();
+  await page.reload();
+  await page.getByRole("button", { name: /Retry upload/ }).click();
+  await expect(page.getByText("For safety, retry sends every part again", { exact: false })).toBeVisible();
+  await page.screenshot({ path: resolve(".local-dev/upload-retry.png"), fullPage: true });
+  await page.locator('input[type="file"]').setInputFiles({ name: "different.mp4", mimeType: "video/mp4", buffer: readFileSync(fixture) });
+  await expect(page.getByRole("alert")).toContainText("does not match the interrupted upload");
+  await page.unroute(/\/api\/uploads\/[^/]+\/parts\/1$/);
+  // Same name and length, but different bytes: a retry must replace all old parts.
+  const retriedBytes = Buffer.from(readFileSync(fixture));
+  retriedBytes[retriedBytes.length - 1] ^= 1;
+  await page.locator('input[type="file"]').setInputFiles({ name: "interview-fixture.mp4", mimeType: "video/mp4", buffer: retriedBytes });
   await page.waitForURL(/\/studio\/[0-9a-f-]{36}/);
   await expect(page.getByText("ready", { exact: true })).toBeVisible({ timeout: 30_000 });
   const projectId = page.url().split("/").pop()!;
+  const source = await page.request.get(`/api/projects/${projectId}/media`);
+  expect(source.ok()).toBe(true);
+  expect(Buffer.from(await source.body()).equals(retriedBytes)).toBe(true);
+  const repeatedCompletion = await page.request.post(`/api/uploads/${projectId}/complete`, { headers: { origin } });
+  expect(repeatedCompletion.ok(), await repeatedCompletion.text()).toBe(true);
+  expect((await repeatedCompletion.json()).projectId).toBe(projectId);
   await page.route(`**/api/projects/${projectId}`, route => route.fulfill({
     status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary project outage" }),
   }), { times: 1 });
