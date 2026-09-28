@@ -51,7 +51,7 @@ export async function preflight(intent: Intent, requestedPath: string) {
   catch { throw new Error("Checkout lacks .envrc; update it from the reviewed master before launching an editing session"); }
   if (actual !== trusted) throw new Error("Checkout .envrc differs from master; review it explicitly, never auto-allow a changed script");
   const probe = await run(["direnv", "exec", path, "bun", join(root, "scripts/session-env-probe.ts")], path);
-  if (probe.code !== 0) throw new Error(`Checkout env not approved or contains privileged credentials; review .envrc and run direnv allow ${path} only after verifying it matches master`);
+  if (probe.code !== 0) throw new Error(`Checkout env unavailable or privileged variables are present. Review .envrc, approve with direnv allow ${path} only if trusted, and clear any staging credentials from the local launch environment`);
   let ports: { devPort: number; rendererPort: number };
   try { ports = JSON.parse(probe.out); }
   catch { throw new Error("Local env probe did not return valid port metadata"); }
