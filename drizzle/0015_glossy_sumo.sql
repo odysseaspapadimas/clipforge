@@ -1,0 +1,1 @@
+ALTER TABLE `clip` ADD `caption_style` text DEFAULT '{"preset":"classic","color":"#FFFFFF","size":76,"position":"low"}' NOT NULL;

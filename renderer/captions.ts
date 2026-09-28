@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { cropRect } from "./crop.ts";
 import { captionFrames, captionLines } from "./caption-timeline.ts";
+import { assColor, captionLayout, captionStyle, defaultCaptionStyle } from "../src/domain/caption-style.ts";
 
 export const renderOptions = z.object({
   startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(),
   cropX: z.number().int().min(0).max(1000), cropY: z.number().int().min(0).max(1000),
   zoom: z.number().int().min(1000).max(2500),
   captions: z.array(z.object({ text: z.string().min(1).max(80), startMs: z.number().int(), endMs: z.number().int() })).max(600),
+  captionStyle: captionStyle.default(defaultCaptionStyle),
 }).refine((value) => value.endMs > value.startMs && value.endMs - value.startMs <= 180_000);
 export type RenderOptions = z.infer<typeof renderOptions>;
 
@@ -28,7 +30,9 @@ export function buildAss(options: RenderOptions): string {
     const text = captionLines(frame.words).map((line) => safeText(line)).join("\\N");
     return `Dialogue: 0,${assTime(frame.startCs * 10)},${assTime(frame.endCs * 10)},Caption,,0,0,0,,${text}`;
   });
-  return `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Caption,DejaVu Sans,76,&H00FFFFFF,&H00FFFFFF,&H000B1020,&H880B1020,-1,0,0,0,100,100,0,0,1,5,2,2,65,65,315,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${events.join("\n")}\n`;
+  const style = captionStyle.parse(options.captionStyle);
+  const layout = captionLayout(style);
+  return `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 2\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Caption,DejaVu Sans,${style.size},${assColor(style.color)},${assColor(style.color)},&H000B1020,&H880B1020,${layout.bold},0,0,0,100,100,0,0,1,${layout.outline},${layout.shadow},2,65,65,${layout.marginV},1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n${events.join("\n")}\n`;
 }
 
 /** Crop fits 9:16 within the input before applying focal-point offset and zoom. */

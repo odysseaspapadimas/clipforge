@@ -63,7 +63,7 @@ export const clips = sqliteTable("clip", {
   userId: text("user_id").notNull().references(() => users.id), title: text("title").notNull(),
   startMs: integer("start_ms").notNull(), endMs: integer("end_ms").notNull(),
   cropX: integer("crop_x").notNull().default(500), cropY: integer("crop_y").notNull().default(500),
-  zoom: integer("zoom").notNull().default(1000), captions: text("captions", { mode: "json" }).notNull().$type<Array<{ text: string; startMs: number; endMs: number }>>(),
+  zoom: integer("zoom").notNull().default(1000), captionStyle: text("caption_style", { mode: "json" }).notNull().default('{"preset":"classic","color":"#FFFFFF","size":76,"position":"low"}').$type<import("../domain/caption-style.ts").CaptionStyle>(), captions: text("captions", { mode: "json" }).notNull().$type<Array<{ text: string; startMs: number; endMs: number }>>(),
   rationale: text("rationale"), score: integer("score"),
   revision: integer("revision").notNull().default(1), status: text("status", { enum: ["draft", "rendering", "ready", "failed"] }).notNull().default("draft"),
   outputKey: text("output_key"), renderedRevision: integer("rendered_revision"),

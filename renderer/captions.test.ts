@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { buildAss, cropFilter, renderOptions } from "./captions.ts";
+import { captionPresets } from "../src/domain/caption-style.ts";
 import { cropRect, previewCropStyle } from "../src/domain/crop.ts";
 import { displayDimensions } from "../src/domain/orientation.ts";
 
@@ -19,6 +20,19 @@ test("browser viewport represents precisely the FFmpeg crop, including rotation 
   expect(cropRect(portrait.width, portrait.height, 500, 500, 1000)).toEqual({ width: 360, height: 640, left: 0, top: 0 });
   expect(displayDimensions({ width: 640, height: 360, tags: { rotate: 90 } })).toEqual(portrait);
 });
+test("caption presets and custom colors/sizes/position survive into ASS without directives", () => {
+  const base = { startMs: 0, endMs: 9000, cropX: 500, cropY: 500, zoom: 1000, captions: [] };
+  for (const preset of Object.values(captionPresets)) {
+    const ass = buildAss(renderOptions.parse({ ...base, captionStyle: preset }));
+    expect(ass).toContain(`DejaVu Sans,${preset.size},`);
+  }
+  const customized = buildAss(renderOptions.parse({ ...base, captionStyle: { ...captionPresets.bold, color: "#12A4F0", size: 105, position: "low" } }));
+  expect(customized).toContain("DejaVu Sans,105,&H00F0A412");
+  expect(customized).toContain(",65,65,315,1");
+  expect(renderOptions.safeParse({ ...base, captionStyle: { ...captionPresets.bold, color: "#fff}\\nDialogue: evil" } }).success).toBe(false);
+  expect(renderOptions.safeParse({ ...base, captionStyle: { ...captionPresets.bold, size: 900 } }).success).toBe(false);
+});
+
 test("caption text cannot inject subtitle directives and stays relative to the clip", () => {
   const options = renderOptions.parse({ startMs: 10_000, endMs: 30_000, cropX: 500, cropY: 500, zoom: 1000,
     captions: [{ text: "Hi{\\pos(0,0)}", startMs: 10_000, endMs: 10_500 },

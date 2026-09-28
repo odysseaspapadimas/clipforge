@@ -98,6 +98,20 @@ test("verified customer can upload, edit, export and download; other accounts ca
   const captionText = page.getByLabel("Caption 1 text");
   await expect(captionText).toBeVisible();
   await captionText.fill("Corrected");
+  await page.getByRole("button", { name: "bold", exact: true }).click();
+  await page.getByLabel("Caption color").fill("#12a4f0");
+  await page.getByLabel("Caption size").fill("105");
+  await page.getByLabel("Caption placement").selectOption("low");
+  await expect(page.locator(".preview-overlay")).toHaveCSS("color", "rgb(18, 164, 240)");
+  const firstEnd = Number(await page.getByLabel("Caption 1 end").inputValue());
+  await page.locator(".preview-viewport video").evaluate(async (node, time) => {
+    const video = node as HTMLVideoElement;
+    if (video.readyState < 2) await new Promise<void>(resolve => video.addEventListener("loadeddata", () => resolve(), { once: true }));
+    video.currentTime = time;
+    await new Promise<void>(resolve => video.addEventListener("seeked", () => resolve(), { once: true }));
+  }, (0.1 + firstEnd) / 2);
+  await expect(page.locator(".preview-overlay")).not.toBeEmpty();
+  await page.locator(".preview-viewport").screenshot({ path: resolve(".local-dev/caption-preview.png") });
   const firstStart = page.getByLabel("Caption 1 start");
   await firstStart.fill("0.1");
   await page.getByLabel("New caption word").fill("Inserted");
@@ -111,6 +125,11 @@ test("verified customer can upload, edit, export and download; other accounts ca
   await expect(firstStart).toHaveValue("0.1");
   const savedCaptions = await (await page.request.get(`/api/projects/${projectId}`)).json();
   expect(savedCaptions.clips[0].captions[1].text).toBe("Inserted");
+  expect(savedCaptions.clips[0].captionStyle).toEqual({ preset: "bold", color: "#12a4f0", size: 105, position: "low" });
+  await page.reload();
+  await page.getByRole("button", { name: "Captions", exact: true }).click();
+  await expect(page.getByLabel("Caption color")).toHaveValue("#12a4f0");
+  await expect(page.getByLabel("Caption size")).toHaveValue("105");
   expect(savedCaptions.clips[0].captions.some((item: { text: string; startMs: number }) =>
     item.text === removedText && item.startMs === removedStart)).toBe(false);
   await page.getByRole("button", { name: "Cut", exact: true }).click();
@@ -163,6 +182,13 @@ test("verified customer can upload, edit, export and download; other accounts ca
   expect(path).not.toBeNull();
   const duration = Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path!]).toString().trim());
   expect(duration).toBeGreaterThan(8);
+  execFileSync("ffmpeg", ["-v", "error", "-ss", "0.4", "-i", path!, "-frames:v", "1", "-y", resolve(".local-dev/caption-export.png")]);
+  const frame = execFileSync("ffmpeg", ["-v", "error", "-i", resolve(".local-dev/caption-export.png"), "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"], { maxBuffer: 10_000_000 });
+  let styledPixels = 0;
+  for (let offset = 0; offset < frame.length; offset += 3) {
+    if (frame[offset] < 85 && frame[offset + 1] > 105 && frame[offset + 1] < 210 && frame[offset + 2] > 170) styledPixels++;
+  }
+  expect(styledPixels).toBeGreaterThan(100);
 
   const clipId = new URL(download.url()).pathname.split("/").at(-2)!;
   const stranger = await browser.newContext({ baseURL: origin });

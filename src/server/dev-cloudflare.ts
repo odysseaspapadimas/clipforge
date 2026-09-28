@@ -155,13 +155,13 @@ async function localIngest(projectId: string) {
   }
 }
 async function localExport(jobId: string) {
-  const job = await DB.prepare(`SELECT j.id,j.clip_id,j.revision,c.user_id,c.project_id,c.start_ms,c.end_ms,c.crop_x,c.crop_y,c.zoom,c.captions,p.source_key
+  const job = await DB.prepare(`SELECT j.id,j.clip_id,j.revision,c.user_id,c.project_id,c.start_ms,c.end_ms,c.crop_x,c.crop_y,c.zoom,c.captions,c.caption_style,p.source_key
     FROM render_job j JOIN clip c ON c.id=j.clip_id JOIN project p ON p.id=c.project_id WHERE j.id=?`).bind(jobId).first<any>();
   if (!job) return;
   try {
     await DB.prepare("UPDATE render_job SET status='running',updated_at=? WHERE id=?").bind(Date.now(),jobId).run();
     const response = await fetch(`http://127.0.0.1:${process.env.CLIPFORGE_RENDERER_PORT ?? "8080"}/render`, { method: "POST", headers: { "x-clipforge-render": JSON.stringify({
-      startMs: job.start_ms,endMs: job.end_ms,cropX: job.crop_x,cropY: job.crop_y,zoom: job.zoom,captions: JSON.parse(job.captions),
+      startMs: job.start_ms,endMs: job.end_ms,cropX: job.crop_x,cropY: job.crop_y,zoom: job.zoom,captions: JSON.parse(job.captions),captionStyle: JSON.parse(job.caption_style),
     }) }, body: createReadStream(mediaPath(job.source_key)) as any, duplex: "half" } as RequestInit);
     if (!response.ok || !response.body) throw new Error(`Local renderer unavailable (${response.status}); run bun run dev:renderer`);
     const key = `users/${job.user_id}/outputs/${job.clip_id}/revision-${job.revision}.mp4`;

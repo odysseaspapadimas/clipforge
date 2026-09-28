@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { captionStyle, defaultCaptionStyle } from "./caption-style.ts";
 
 export const MAX_UPLOAD_BYTES = 5 * 1024 ** 3;
 export const MAX_DURATION_MS = 2 * 60 * 60 * 1000;
@@ -18,7 +19,7 @@ export const clipEdit = z.object({
   startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(),
   cropX: z.number().int().min(0).max(1000), cropY: z.number().int().min(0).max(1000),
   zoom: z.number().int().min(1000).max(2500),
-  captions: z.array(caption).max(600), revision: z.number().int().positive(),
+  captions: z.array(caption).max(600), captionStyle: captionStyle.default(defaultCaptionStyle), revision: z.number().int().positive(),
 }).superRefine((value, context) => {
   if (value.endMs - value.startMs < MIN_CLIP_MS || value.endMs - value.startMs > MAX_CLIP_MS) {
     context.addIssue({ code: "custom", message: "Clip must be between 8 and 180 seconds", path: ["endMs"] });
