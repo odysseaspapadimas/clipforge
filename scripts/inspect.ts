@@ -44,7 +44,7 @@ for (const tree of trees) {
   const dirty = !!(await run(["git", "status", "--porcelain", "--untracked-files=normal"], tree.path));
   const pr = prs.find(p => p.headRefName === tree.branch);
   const evidence = await findEvidence(tree.path, tree.sha);
-  const checks = (pr?.statusCheckRollup ?? []).map((c: any) => ({ name: c.name ?? c.context ?? "check", status: c.conclusion ?? c.state ?? c.status ?? "unknown" }));
+  const checks = (pr?.statusCheckRollup ?? []).map((c: any) => ({ name: c.name ?? c.context ?? "check", status: c.conclusion || c.state || c.status || "pending" }));
   snapshot.push({ path: tree.path, branch: tree.branch, sha: tree.sha, dirty, pr: pr ? { number: pr.number, title: pr.title, url: pr.url, draft: pr.isDraft, headMatches: pr.headRefOid === tree.sha, checks } : null,
     evidence: evidence ?? null, agents: agents.filter(a => a.cwd === tree.path).map(a => ({ status: a.agent_status ?? "unknown", pane: a.pane_id ?? "unknown" })) });
 }
