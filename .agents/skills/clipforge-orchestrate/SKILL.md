@@ -1,0 +1,30 @@
+---
+name: clipforge-orchestrate
+description: Coordinate independent Clipforge Pi sessions in one Herdr workspace. Use when the user asks to launch or manage multiple features, a review/investigation, or ongoing persistent work; preserve each session's requested outcome rather than forcing PRs.
+---
+
+# Clipforge session orchestration
+
+This is a runbook for the **current Pi session**, not a new daemon or tool. `pi_sessions` supplies durable history, Herdr tabs, draft-safe delivery, exact-run watches and resumption. Read [intent contracts](references/intent-contracts.md) to construct complete starting messages; new sessions do not inherit this conversation. Project safety rules in `AGENTS.md` always apply.
+
+## Decide intent before topology
+
+Extract each independent objective and its desired outcome: `pr` (finite implementation with explicit PR), `investigation` (answer/review, read-only unless authorized), or `persistent` (long-term ownership/exploration, **not** an implicit PR). A review can be persistent if the user explicitly wants a long-running conversation. Don't create a separate session for tightly coupled edits or a routine subtask; one writer per worktree. Record objective, non-goals, acceptance criteria and boundaries in the starting message. Ask only for a genuinely missing requirement or irreversible authorization, not for reversible design details. Do not invent deliverables for a vague ongoing brief.
+
+## Prepare independently editable checkouts
+
+The orchestrator must run **inside the Clipforge Herdr workspace**, not a side chat in another workspace. `pi_sessions.create` launches each Pi tab in the caller's Herdr workspace and with the supplied `cwd`; it does **not** create a Git worktree, trust `.envrc`, provision a database, or verify CI. For an editing `pr` or `persistent` session, start from current `master` in a unique branch and checkout, e.g. `git worktree add -b feat/<slug> ~/dev/effect/.worktrees/clipforge/<slug> master`. Never move/remove existing worktrees or overwrite unmerged/private evidence. A read-only investigation can use the existing checkout, with **no write permission in its brief**; give a separate worktree if it must build or test with mutable project state.
+
+Before unattended `direnv allow <checkout>`, compare `.envrc` byte-for-byte against reviewed `master` (`git -C <checkout> show master:.envrc | cmp - <checkout>/.envrc`). If different, stop for review; do not blindly approve executable code from a branch. Then run `bun scripts/session-preflight.ts <pr|investigation|persistent> <absolute-checkout-path>` **from this project**, for every planned session. The CLI checks workspace, Git membership, clean writer checkout, trusted `.envrc`, direnv approval and local-only distinct ports; it emits no credentials. An investigation is reported as env-not-required and must remain read-only. Preflight failure is not permission to bypass it, paste secrets in chat, or substitute a shell that silently misses local env. If independent local databases are required for another project, isolate them per worktree as well. Keep staging/deploy credentials separate.
+
+## Launch with Pi sessions, not keyboard input
+
+Call `pi_sessions.create` with unique purpose-bearing names, explicit absolute `cwd`, `lifecycle: "task"` for finite PR/investigation work (unless the user explicitly wants to revisit that session), and `lifecycle: "persistent"` for long-term ownership. Include a self-contained starting message per [intent contracts](references/intent-contracts.md): copy the actual user objective, project context, constraints, evidence standard **for that intent**, and where to report back. For PR intent, ask the worker to own the whole feature through review/CI, not a first slice. For persistent intent, say explicitly that research/spikes do not imply a PR or permission to deploy. On incomplete startup, use the returned session ID with `resume`/`send` and an explicit message; never treat an idle empty tab as launched. Do not create a second copy blindly.
+
+## Observe the requested outcome
+
+Maintain the name ↔ session ID ↔ worktree/branch ↔ intent mapping in the orchestrator conversation. `pi_sessions.list` (project cwd filter), `status`, `read` and `watch` reconstruct it after resuming; Git worktrees and `bun scripts/inspect.ts` supply independent evidence. On a `send`, retain its `messageId`: `queued` is not accepted, `accepted` is not completed. `watch` **that messageId** or inspect `status`, and retry an uncertain delivery only with the same ID and exact text. A Pi `completed` run means a response settled, **not** that its requested artifact passed.
+
+For PR intent, inspect Git HEAD/dirty state, SHA-pinned `clipforge-verify` report, relevant UI/regression, GitHub PR HEAD and CI before telling the user it is shippable within offline scope; send concrete follow-ups to the original owner if something substantive fails. Do not churn on speculative review lists. Investigation ends with a sourced answer and clear confidence/limits, no PR. Persistent work yields findings, prototypes and decision points and **stays open**; do not manufacture a PR or close the tab because it answered a question. Relay early investigation results while other sessions continue. Never merge, deploy, use paid models or change live Cloudflare/Stripe/email without the specific authorization in `AGENTS.md`.
+
+If the parent turn is interrupted or restarts, running workers may continue; rediscover by cwd/name, read latest entries and reconcile Git/CI before sending new instructions. The Pi session tool preserves conversations and completed-run markers; it does **not** wake an idle orchestrator automatically. When results are needed now, watch the workers and continue in the same turn. Leave work explicitly in the background only if the user requests that; then describe the handoff and how to resume. There is no arbitrary slice or iteration cap: finish the requested outcome or state the real blocker.
