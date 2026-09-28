@@ -6,6 +6,8 @@ dist/
 .dev.vars
 .env*
 !.env.example
+!.envrc
+.direnv/
 *.db
 *.db-*
 .vite/
