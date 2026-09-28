@@ -25,22 +25,25 @@ if (process.env.HERDR_ENV === "1") {
     agents = raw.result?.agents ?? [];
   } catch { /* Herdr optional */ }
 }
-let reports: any[] = [];
-const reportRoot = join(root, ".local-dev", "verification");
-try {
-  const dirs = (await readdir(reportRoot)).sort().reverse().slice(0, 100);
-  for (const dir of dirs) {
-    try {
-      const json = JSON.parse(await readFile(join(reportRoot, dir, "report.json"), "utf8"));
-      if (json.schemaVersion === 1 && typeof json.gitSha === "string") reports.push({ sha: json.gitSha, dirty: json.dirty, outcome: json.outcome, scope: json.scope, createdAt: json.createdAt });
-    } catch { /* missing or invalid report */ }
-  }
-} catch { /* no local evidence */ }
+async function findEvidence(path: string, sha: string) {
+  const reportRoot = join(path, ".local-dev", "verification");
+  try {
+    const dirs = (await readdir(reportRoot)).sort().reverse().slice(0, 100);
+    for (const dir of dirs) {
+      try {
+        const json = JSON.parse(await readFile(join(reportRoot, dir, "report.json"), "utf8"));
+        if (json.schemaVersion === 1 && json.gitSha === sha && json.dirty === false)
+          return { sha: json.gitSha, outcome: json.outcome, scope: json.scope, createdAt: json.createdAt };
+      } catch { /* missing or invalid report */ }
+    }
+  } catch { /* no local evidence */ }
+  return null;
+}
 const snapshot = [];
 for (const tree of trees) {
   const dirty = !!(await run(["git", "status", "--porcelain", "--untracked-files=normal"], tree.path));
   const pr = prs.find(p => p.headRefName === tree.branch);
-  const evidence = reports.find(r => r.sha === tree.sha && r.dirty === false);
+  const evidence = await findEvidence(tree.path, tree.sha);
   const checks = (pr?.statusCheckRollup ?? []).map((c: any) => ({ name: c.name ?? c.context ?? "check", status: c.conclusion ?? c.state ?? c.status ?? "unknown" }));
   snapshot.push({ path: tree.path, branch: tree.branch, sha: tree.sha, dirty, pr: pr ? { number: pr.number, title: pr.title, url: pr.url, draft: pr.isDraft, headMatches: pr.headRefOid === tree.sha, checks } : null,
     evidence: evidence ?? null, agents: agents.filter(a => a.cwd === tree.path).map(a => ({ status: a.agent_status ?? "unknown", pane: a.pane_id ?? "unknown" })) });
