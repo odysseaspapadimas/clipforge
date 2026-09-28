@@ -83,12 +83,13 @@ test("verified customer can upload, edit, export and download; other accounts ca
   await page.getByLabel("Caption size").fill("105");
   await page.getByLabel("Caption placement").selectOption("low");
   await expect(page.locator(".preview-overlay")).toHaveCSS("color", "rgb(18, 164, 240)");
-  await page.locator(".preview-viewport video").evaluate(async (node) => {
+  const firstEnd = Number(await page.getByLabel("Caption 1 end").inputValue());
+  await page.locator(".preview-viewport video").evaluate(async (node, time) => {
     const video = node as HTMLVideoElement;
     if (video.readyState < 2) await new Promise<void>(resolve => video.addEventListener("loadeddata", () => resolve(), { once: true }));
-    video.currentTime = .4;
+    video.currentTime = time;
     await new Promise<void>(resolve => video.addEventListener("seeked", () => resolve(), { once: true }));
-  });
+  }, (0.1 + firstEnd) / 2);
   await expect(page.locator(".preview-overlay")).not.toBeEmpty();
   await page.locator(".preview-viewport").screenshot({ path: resolve(".local-dev/caption-preview.png") });
   const firstStart = page.getByLabel("Caption 1 start");
