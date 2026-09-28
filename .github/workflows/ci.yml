@@ -1,0 +1,44 @@
+name: Clipforge CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  local-verification:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+      - run: bun install --frozen-lockfile
+      - name: Verify local dependencies
+        run: |
+          ffmpeg -version | head -1
+          ffprobe -version | head -1
+          bunx playwright install --with-deps chromium
+      - run: bun run db:check
+      - run: bun run typecheck
+      - run: bun test test renderer
+      - run: bun run build
+      - name: Offline-adapter browser journey (not live provider evidence)
+        run: bun run test:e2e
+      - name: Retain failing browser diagnostics only
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clipforge-browser-failure
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
