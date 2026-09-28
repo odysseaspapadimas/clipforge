@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { cropRect } from "./crop.ts";
 import { captionFrames, captionLines } from "./caption-timeline.ts";
-import { assColor, captionLayout, captionStyle, defaultCaptionStyle } from "../src/domain/caption-style.ts";
+import { assColor, captionLayout, captionStyle, defaultCaptionStyle } from "./caption-style.ts";
 
 export const renderOptions = z.object({
   startMs: z.number().int().nonnegative(), endMs: z.number().int().positive(),
