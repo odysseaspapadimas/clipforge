@@ -411,10 +411,10 @@ export class IngestWorkflow extends WorkflowEntrypoint<ProcessorEnv, { projectId
 export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: string }> {
   override async run(event: WorkflowEvent<{ jobId: string }>, step: WorkflowStep) {
     const { jobId } = event.payload;
-    const job = await this.env.DB.prepare(`SELECT j.id,j.clip_id,j.user_id,j.revision,j.status,c.project_id,c.start_ms,c.end_ms,c.crop_x,c.crop_y,c.zoom,c.captions,p.source_key
+    const job = await this.env.DB.prepare(`SELECT j.id,j.clip_id,j.user_id,j.revision,j.status,c.project_id,c.start_ms,c.end_ms,c.crop_x,c.crop_y,c.zoom,c.captions,c.caption_style,p.source_key
       FROM render_job j JOIN clip c ON c.id = j.clip_id AND c.user_id = j.user_id JOIN project p ON p.id = c.project_id AND p.user_id = j.user_id
       WHERE j.id = ? AND p.status = 'ready'`).bind(jobId).first<{ id: string; clip_id: string; user_id: string; revision: number; status: string;
-        project_id: string; start_ms: number; end_ms: number; crop_x: number; crop_y: number; zoom: number; captions: string; source_key: string }>();
+        project_id: string; start_ms: number; end_ms: number; crop_x: number; crop_y: number; zoom: number; captions: string; caption_style: string; source_key: string }>();
     if (!job) throw new Error("job_missing");
     if (job.status === "ready") return { jobId, status: "ready" };
     if (job.status === "queued" && !await claimExportStart(this.env.DB, jobId)) throw new Error("job_cancelled_before_render");
@@ -430,7 +430,7 @@ export class ExportWorkflow extends WorkflowEntrypoint<ProcessorEnv, { jobId: st
         if (!source) throw new Error("source_missing");
         const container = getContainer(this.env.RENDER, `media-slot-${lease.slot}`);
         const config = JSON.stringify({ startMs: job.start_ms, endMs: job.end_ms, cropX: job.crop_x,
-          cropY: job.crop_y, zoom: job.zoom, captions: JSON.parse(job.captions) });
+          cropY: job.crop_y, zoom: job.zoom, captions: JSON.parse(job.captions), captionStyle: JSON.parse(job.caption_style) });
         const response = await container.fetch("http://container/render", { method: "POST", headers: {
           "content-type": "application/octet-stream", "x-clipforge-render": config,
         }, body: source.body });

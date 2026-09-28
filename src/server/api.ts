@@ -273,11 +273,11 @@ export async function handleApi(request: Request): Promise<Response> {
             values.startMs, values.endMs);
           if (!clipEdit.safeParse({ ...values, revision }).success) return fail("Cut has too many captions or invalid timing; shorten the cut", 400);
         }
-        const result = await env.DB.prepare(`UPDATE clip SET title = ?,start_ms = ?,end_ms = ?,crop_x = ?,crop_y = ?,zoom = ?,captions = ?,
+        const result = await env.DB.prepare(`UPDATE clip SET title = ?,start_ms = ?,end_ms = ?,crop_x = ?,crop_y = ?,zoom = ?,captions = ?,caption_style = ?,
           revision = revision + 1,status = 'draft',output_key = NULL,updated_at = ? WHERE id = ? AND user_id = ? AND revision = ?
           AND EXISTS (SELECT 1 FROM project WHERE id = ? AND user_id = ? AND status = 'ready')`)
           .bind(values.title, values.startMs, values.endMs, values.cropX, values.cropY, values.zoom,
-            JSON.stringify(values.captions), Date.now(), clip.id, user.id, revision, project.id, user.id).run();
+            JSON.stringify(values.captions), JSON.stringify(values.captionStyle), Date.now(), clip.id, user.id, revision, project.id, user.id).run();
         if (result.meta.changes !== 1) return fail("This clip changed in another tab. Refresh to continue.", 409);
         return json({ revision: revision + 1, captions: values.captions });
       }
