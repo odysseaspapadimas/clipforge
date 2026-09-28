@@ -4,7 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-de
 WORKDIR /app
 COPY package.json bun.lock* ./
 RUN bun install --frozen-lockfile --production
-COPY server.ts captions.ts caption-timeline.ts crop.ts orientation.ts ./
+COPY server.ts captions.ts caption-timeline.ts caption-style.ts crop.ts orientation.ts ./
 USER bun
 EXPOSE 8080
 CMD ["bun", "server.ts"]
