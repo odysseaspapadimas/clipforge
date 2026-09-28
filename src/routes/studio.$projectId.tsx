@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { ArrowLeft, ArrowRight, Captions, Check, ChevronDown, Crop, Download, Film, LoaderCircle, Play, RotateCcw, Save, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { previewCropStyle } from "../domain/crop.ts";
 import { captionFrames, captionLines } from "../domain/caption-timeline.ts";
 import { insertCaption, removeCaption } from "../domain/caption-edit.ts";
@@ -37,11 +37,22 @@ function ProjectEditor() {
   const [previewError, setPreviewError] = useState("");
   const [currentMs, setCurrentMs] = useState(0);
   const [player, setPlayer] = useState<HTMLVideoElement | null>(null);
+  const loadRequest = useRef(0);
   async function refresh() {
-    try { setData(await api<ProjectData>(`projects/${projectId}`)); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Project unavailable"); }
+    const request = ++loadRequest.current;
+    try {
+      const latest = await api<ProjectData>(`projects/${projectId}`);
+      if (request === loadRequest.current) { setData(latest); setError(""); }
+    } catch (cause) {
+      if (request === loadRequest.current) setError(cause instanceof Error ? cause.message : "Project unavailable");
+    }
   }
-  useEffect(() => { void refresh(); const timer = setInterval(() => { void refresh(); }, 6_000); return () => clearInterval(timer); }, [projectId]);
+  useEffect(() => {
+    setData(null); setError("");
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 6_000);
+    return () => { clearInterval(timer); loadRequest.current++; };
+  }, [projectId]);
   useEffect(() => {
     if (!data) return;
     const active = data.clips.find((clip) => clip.id === selected) ?? data.clips[0];
@@ -123,7 +134,7 @@ function ProjectEditor() {
       setNotice("Captions replaced from the transcript. Your text and timing corrections are not retained until you save.");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not load transcript"); }
   }
-  if (!data) return <div className="content-container editor-loading">{error || <><LoaderCircle className="spin" /> Opening your studio…</>}</div>;
+  if (!data || data.project.id !== projectId) return <div className="content-container editor-loading">{error ? <div role="alert"><p>{error}</p><button className="button button-outline" onClick={() => { setError(""); void refresh(); }}>Retry loading project</button><p><Link to="/studio">Back to studio</Link></p></div> : <><LoaderCircle className="spin" /> Opening your studio…</>}</div>;
   const { project } = data;
   return <div className="content-container editor-page"><div className="editor-breadcrumb"><Link to="/studio"><ArrowLeft size={17} /> Your studio</Link><span>/</span><span>{project.title}</span></div>
     <div className="editor-heading"><div><span className="eyebrow">YOUR PROJECT</span><h1>{project.title}<span className="orange-dot">.</span></h1><p>{project.durationMs ? `${displayTime(project.durationMs)} source` : "Analyzing source"} <span>·</span> {data.clips.length} suggested {data.clips.length === 1 ? "clip" : "clips"}</p></div><span className={`status ${project.status}`}>{project.status}</span></div>

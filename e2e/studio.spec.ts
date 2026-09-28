@@ -61,6 +61,14 @@ test("verified customer can upload, edit, export and download; other accounts ca
   await page.waitForURL(/\/studio\/[0-9a-f-]{36}/);
   await expect(page.getByText("ready", { exact: true })).toBeVisible({ timeout: 30_000 });
   const projectId = page.url().split("/").pop()!;
+  await page.route(`**/api/projects/${projectId}`, route => route.fulfill({
+    status: 503, contentType: "application/json", body: JSON.stringify({ error: "Temporary project outage" }),
+  }), { times: 1 });
+  await page.reload();
+  await expect(page.getByRole("alert")).toContainText("Temporary project outage");
+  await page.getByRole("button", { name: "Retry loading project" }).click();
+  await expect(page.locator(".editor-heading h1")).toBeVisible();
+  await expect(page.getByRole("alert")).toHaveCount(0);
   await page.screenshot({ path: resolve(".local-dev/editor.png"), fullPage: true });
   const title = page.getByLabel("Clip title");
   await title.fill("A conversation worth sharing");
