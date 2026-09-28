@@ -161,6 +161,7 @@ function ProjectEditor() {
             setPreviewError("This browser displays a different rotation than the renderer. Do not rely on this preview; convert to an upright H.264 MP4.");
           else setPreviewError("");
         }}
+        onSeeked={(event) => setCurrentMs(event.currentTarget.currentTime * 1000)}
         onTimeUpdate={(event) => { setCurrentMs(event.currentTarget.currentTime * 1000); if (event.currentTarget.currentTime >= draft.endMs / 1000) { event.currentTarget.pause(); setPlaying(false); } }}
         style={project.width && project.height ? previewCropStyle(project.width, project.height, draft.cropX, draft.cropY, draft.zoom) : undefined} />
         <div className="preview-overlay" style={{ color: (draft.captionStyle ?? defaultCaptionStyle).color, fontSize: `calc(var(--preview-height) * ${(draft.captionStyle ?? defaultCaptionStyle).size} / 1920)`, bottom: `calc(var(--preview-height) * ${captionLayout(draft.captionStyle ?? defaultCaptionStyle).marginV} / 1920)`, WebkitTextStroke: `calc(var(--preview-height) * ${captionLayout(draft.captionStyle ?? defaultCaptionStyle).outline} / 1920) #0B1020`, textShadow: (draft.captionStyle ?? defaultCaptionStyle).preset === "minimal" ? "none" : "0 1px 1px #0B1020", fontWeight: (draft.captionStyle ?? defaultCaptionStyle).preset === "minimal" ? 400 : 900 }}>{previewWords.map((line, index) => <span key={index}>{line}{index < previewWords.length - 1 && <br />}</span>)}</div>

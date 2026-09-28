@@ -89,6 +89,7 @@ test("verified customer can upload, edit, export and download; other accounts ca
     video.currentTime = .4;
     await new Promise<void>(resolve => video.addEventListener("seeked", () => resolve(), { once: true }));
   });
+  await expect(page.locator(".preview-overlay")).not.toBeEmpty();
   await page.locator(".preview-viewport").screenshot({ path: resolve(".local-dev/caption-preview.png") });
   const firstStart = page.getByLabel("Caption 1 start");
   await firstStart.fill("0.1");
