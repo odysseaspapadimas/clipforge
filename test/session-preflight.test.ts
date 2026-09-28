@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { localEnvIsSafe, worktrees } from "../scripts/session-preflight.ts";
 
 test("preflight parses only live named or detached Git worktrees", () => {
-  expect(worktrees("worktree /code/main\nHEAD abc\nbranch refs/heads/master\n\nworktree /code/feature\nHEAD def\nbranch refs/heads/feat/captions\n\nworktree /code/stale\nHEAD 123\nprunable gitdir file points to non-existent location\n\nworktree /code/review\nHEAD 999\ndetached\n")).toEqual([
-    { path: "/code/main", branch: "master" }, { path: "/code/feature", branch: "feat/captions" }, { path: "/code/review", branch: "detached" },
+  expect(worktrees("worktree /code/main\nHEAD abc\nbranch refs/heads/main\n\nworktree /code/feature\nHEAD def\nbranch refs/heads/feat/captions\n\nworktree /code/stale\nHEAD 123\nprunable gitdir file points to non-existent location\n\nworktree /code/review\nHEAD 999\ndetached\n")).toEqual([
+    { path: "/code/main", branch: "main" }, { path: "/code/feature", branch: "feat/captions" }, { path: "/code/review", branch: "detached" },
   ]);
 });
 

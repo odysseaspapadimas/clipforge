@@ -42,14 +42,14 @@ export async function preflight(intent: Intent, requestedPath: string) {
   const sha = await checked(["git", "rev-parse", "HEAD"], path);
   const dirty = Boolean(await checked(["git", "status", "--porcelain", "--untracked-files=normal"], path));
   if (intent === "investigation") return { intent, cwd: path, branch: tree.branch, sha, dirty, env: "not-required", workspaceId: process.env.HERDR_WORKSPACE_ID };
-  if (tree.branch === "master" || tree.branch === "detached") throw new Error("Editing sessions require a named feature worktree, not master/detached HEAD");
+  if (tree.branch === "main" || tree.branch === "detached") throw new Error("Editing sessions require a named feature worktree, not main/detached HEAD");
   if (dirty) throw new Error("Start the editing session from a clean worktree; preserve or review existing changes first");
   // Only identical, reviewed project env code is eligible for unattended approval.
-  const trusted = await checked(["git", "show", "refs/heads/master:.envrc"]);
+  const trusted = await checked(["git", "show", "refs/heads/main:.envrc"]);
   let actual: string;
   try { actual = (await readFile(join(path, ".envrc"), "utf8")).trim(); }
-  catch { throw new Error("Checkout lacks .envrc; update it from the reviewed master before launching an editing session"); }
-  if (actual !== trusted) throw new Error("Checkout .envrc differs from master; review it explicitly, never auto-allow a changed script");
+  catch { throw new Error("Checkout lacks .envrc; update it from the reviewed main before launching an editing session"); }
+  if (actual !== trusted) throw new Error("Checkout .envrc differs from main; review it explicitly, never auto-allow a changed script");
   const probe = await run(["direnv", "exec", path, "bun", join(root, "scripts/session-env-probe.ts")], path);
   if (probe.code !== 0) throw new Error(`Checkout env unavailable or privileged variables are present. Review .envrc, approve with direnv allow ${path} only if trusted, and clear any staging credentials from the local launch environment`);
   let ports: { devPort: number; rendererPort: number };
