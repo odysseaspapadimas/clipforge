@@ -1,8 +1,8 @@
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, type TUI } from "@earendil-works/pi-tui";
-import { join } from "node:path";
-
-const root = join(import.meta.dir, "../..");
+// Pi loads project extensions through a module loader where import.meta.dir is unavailable.
+// Extension discovery starts in the selected checkout, so use its process cwd.
+const root = process.cwd();
 async function snapshot(): Promise<string[]> {
   const child = Bun.spawn(["bun", "scripts/inspect.ts"], { cwd: root, stdout: "pipe", stderr: "ignore" });
   const [text, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
